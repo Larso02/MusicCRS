@@ -9,10 +9,15 @@ from dialoguekit.core.utterance import Utterance
 from dialoguekit.participant.agent import Agent
 from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
+import os
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 OLLAMA_HOST = "https://ollama.ux.uis.no"
-OLLAMA_MODEL = "llama3.3:70b"
-OLLAMA_API_KEY = "SET YOUR API KEY HERE"
+OLLAMA_MODEL = "llama3.3:70b-instruct-q4_K_M"
+OLLAMA_API_KEY = os.getenv("MY_OLLAMA_API_KEY")  # Load from .env or environment variable
 
 _INTENT_OPTIONS = Intent("OPTIONS")
 
