@@ -1,0 +1,10 @@
+turn  n       gold artist in history   gold album in history
+2      15199     0.601                    0.327
+3      15199     0.604                    0.383
+4      15199     0.612                    0.416
+5      15199     0.611                    0.435
+6      15199     0.612                    0.447
+7      15199     0.603                    0.450
+8      15199     0.605                    0.454
+all t>=2 106393  0.607  0.416
+tracks by same artist as last played: median 29 mean 39.2

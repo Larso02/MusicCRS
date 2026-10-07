@@ -1,0 +1,2 @@
+stage 1 done in 57 s
+RESULT {'ndcg@1': np.float64(0.0915), 'ndcg@10': np.float64(0.162), 'ndcg@20': np.float64(0.1754), 'catalog_diversity': 0.6569, 'final_score': np.float64(0.2717)}

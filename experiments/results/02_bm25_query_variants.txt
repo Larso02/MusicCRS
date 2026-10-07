@@ -1,0 +1,8 @@
+0.1076  BASELINE query, 3 fields, no filter
+0.1552  baseline query, 3 fields, + filter
+0.1548  baseline query, 4 fields(tags), +filter
+0.0534  current msg only, 3 fields, +filter
+0.0671  current msg only, 4 fields, +filter
+0.0770  cur + last2 user msgs, 4 fields
+0.0800  all user msgs, 4 fields
+0.0789  cur x2 + last2 user, 4 fields

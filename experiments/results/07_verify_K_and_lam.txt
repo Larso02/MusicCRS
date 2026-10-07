@@ -1,0 +1,6 @@
+K=300 lam=0.5: ndcg@20=0.1751 div=0.6440 final=0.2689
+K=300 lam=1.0: ndcg@20=0.1754 div=0.6569 final=0.2717
+K=300 lam=2.0: ndcg@20=0.1719 div=0.6617 final=0.2699
+K=1000 lam=0.5: ndcg@20=0.1760 div=0.7110 final=0.2830
+K=1000 lam=1.0: ndcg@20=0.1755 div=0.7263 final=0.2857
+K=1000 lam=2.0: ndcg@20=0.1695 div=0.7322 final=0.2820

@@ -1,0 +1,4 @@
+turns: 121592
+gold already in history: 0.0
+unique golds: 43597 of 47071
+Mean gold pop: 47.79106355681295 catalog mean: 35.83684221707633

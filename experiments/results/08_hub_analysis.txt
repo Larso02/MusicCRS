@@ -1,0 +1,8 @@
+REPO CODE K=1000 lam=0.0: ndcg@1=0.0558 ndcg@10=0.1365 ndcg@20=0.1529 div=0.4384 final=0.2100
+lam=0: most-recommended track appears in 1651 lists; tracks in >=100 lists: 70 ; in >=50: 231
+  tracks appearing 1-4 times: 11016 tracks,  22489 slots, hit rate per slot 0.03700
+  tracks appearing 5-19 times:  8389 tracks,  74835 slots, hit rate per slot 0.01621
+  tracks appearing 20-49 times:   998 tracks,  27562 slots, hit rate per slot 0.00969
+  tracks appearing 50-99 times:   161 tracks,  11123 slots, hit rate per slot 0.00845
+  tracks appearing 100-inf times:    70 tracks,  23991 slots, hit rate per slot 0.00038
+REPO CODE K=1000 lam=1.0: ndcg@1=0.0909 ndcg@10=0.1619 ndcg@20=0.1755 div=0.7263 final=0.2857
