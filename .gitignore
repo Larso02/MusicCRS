@@ -4,3 +4,4 @@ cache/
 outputs/
 node_modules/
 .env
+cache/

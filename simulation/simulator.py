@@ -17,7 +17,6 @@ from typing import Any
 
 import colorama
 import config
-import ollama
 import requests
 import socketio
 from dialoguekit.core.annotated_utterance import AnnotatedUtterance
@@ -27,13 +26,14 @@ from dialoguekit.core.intent import Intent
 from dialoguekit.core.slot_value_annotation import SlotValueAnnotation
 from dialoguekit.core.utterance import Utterance
 from dialoguekit.participant import DialogueParticipant
+from openai import OpenAI
 
 _SIMULATION_SERVER_URL = "http://gustav1.ux.uis.no:5000"
 
 _HEADERS = {"X-Auth-Token": config.UPLOAD_TOKEN}
 
-_OLLAMA_HOST = "https://ollama.ux.uis.no"
-_OLLAMA_MODEL = "llama3.3:70b"
+_LLM_BASE_URL = "https://openwebui.ux.uis.no/api"
+_LLM_MODEL = "gorina10.gemma-4-31b"
 
 _PROMPT_TEMPLATE = """# 1. System Instructions: User Persona Simulation
 
@@ -183,7 +183,7 @@ class SimulatorClient:
     def __init__(
         self,
         server_url: str,
-        llm: ollama.Client,
+        llm: OpenAI,
         agent_id: str = "MusicCRS",
         simulated_user_id: str = "sim_user",
         simulation_config: dict[str, Any] = {},
@@ -325,29 +325,26 @@ def _get_llm_prompt(
 
 
 def get_llm_response(
-    llm: ollama.Client, prompt: str, debug: bool = False
+    llm: OpenAI, prompt: str, debug: bool = False
 ) -> str:
     """Calls a large language model (LLM) with the given prompt."""
     if debug:
         print("🧠 Calling LLM...")
         print(prompt)
     try:
-        llm_response = llm.generate(
-            model=_OLLAMA_MODEL,
-            prompt=prompt,
-            options={
-                "stream": False,
-                "temperature": 0.1,
-                "max_tokens": 100,
-            },
+        llm_response = llm.chat.completions.create(
+            model=_LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
         )
+        content = llm_response.choices[0].message.content or ""
     except Exception as e:
         print(f"⚠️ Error during LLM call: {e}")
         return ""
     if debug:
         print("🧠 LLM response:")
-        print(llm_response["response"])
-    return llm_response["response"]
+        print(content)
+    return content
 
 
 def compute_hash(filename: str) -> str:
@@ -426,7 +423,7 @@ def check_uploads() -> None:
         )
 
 
-def check_llm(llm: ollama.Client) -> None:
+def check_llm(llm: OpenAI) -> None:
     """Checks whether the LLM is responding."""
     response = get_llm_response(
         llm, "What is 2 + 2? Respond with just the number."
@@ -516,10 +513,7 @@ if __name__ == "__main__":
         check_uploads()
         sys.exit(0)
 
-    llm = ollama.Client(
-        host=_OLLAMA_HOST,
-        headers={"Authorization": f"Bearer {config.OLLAMA_API_KEY}"},
-    )
+    llm = OpenAI(api_key=config.LLM_API_KEY, base_url=_LLM_BASE_URL)
     check_llm(llm)
 
     personas = fetch_personas()

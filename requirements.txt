@@ -1,5 +1,5 @@
 dialoguekit
-ollama
+openai
 websocket-client
 colorama
 datasets

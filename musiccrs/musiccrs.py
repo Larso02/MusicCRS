@@ -1,6 +1,5 @@
 """MusicCRS conversational agent."""
 
-import ollama
 from dialoguekit.core.annotated_utterance import AnnotatedUtterance
 from dialoguekit.core.dialogue_act import DialogueAct
 from dialoguekit.core.intent import Intent
@@ -9,15 +8,19 @@ from dialoguekit.core.utterance import Utterance
 from dialoguekit.participant.agent import Agent
 from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
+from openai import OpenAI
 import os
 from dotenv import load_dotenv
 
 
 load_dotenv()
 
-OLLAMA_HOST = "https://ollama.ux.uis.no"
-OLLAMA_MODEL = "llama3.3:70b-instruct-q4_K_M"
-OLLAMA_API_KEY = os.getenv("MY_OLLAMA_API_KEY")  # Load from .env or environment variable
+
+LLM_BASE_URL = "https://openwebui.ux.uis.no/api"
+LLM_MODEL = "gorina10.gemma-4-31b"
+LLM_API_KEY = os.getenv("MY_OLLAMA_API_KEY")  # Load from .env or environment variable
+
+
 
 _INTENT_OPTIONS = Intent("OPTIONS")
 
@@ -28,10 +31,7 @@ class MusicCRS(Agent):
         super().__init__(id="MusicCRS")
 
         if use_llm:
-            self._llm = ollama.Client(
-                host=OLLAMA_HOST,
-                headers={"Authorization": f"Bearer {OLLAMA_API_KEY}"},
-            )
+            self._llm = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
         else:
             self._llm = None
 
@@ -116,17 +116,13 @@ class MusicCRS(Agent):
         if not self._llm:
             return "The agent is not configured to use an LLM"
 
-        llm_response = self._llm.generate(
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-            options={
-                "stream": False,
-                "temperature": 0.7,  # optional: controls randomness
-                "max_tokens": 100,  # optional: limits the length of the response
-            },
+        llm_response = self._llm.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,  # optional: controls randomness
         )
 
-        return f"LLM response: {llm_response['response']}"
+        return f"LLM response: {llm_response.choices[0].message.content}"
 
     def _options(self, options: list[str]) -> str:
         """Presents options to the user."""

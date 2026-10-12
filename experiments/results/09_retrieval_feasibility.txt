@@ -1,0 +1,29 @@
+Generating all_tracks split:   0%|          | 0/47071 [00:00<?, ? examples/s]
+Generating all_tracks split:   6%|5         | 2815/47071 [00:00<00:14, 3156.07 examples/s]
+Generating all_tracks split:  18%|#7        | 8445/47071 [00:01<00:04, 9242.44 examples/s]
+Generating all_tracks split:  31%|###       | 14583/47071 [00:01<00:02, 11964.31 examples/s]
+Generating all_tracks split:  37%|###6      | 17398/47071 [00:01<00:02, 10761.39 examples/s]
+Generating all_tracks split:  43%|####2     | 20213/47071 [00:02<00:02, 11031.63 examples/s]
+Generating all_tracks split:  49%|####8     | 23028/47071 [00:02<00:02, 11760.17 examples/s]
+Generating all_tracks split:  56%|#####5    | 26351/47071 [00:03<00:02, 7320.05 examples/s] 
+Generating all_tracks split:  62%|######1   | 29166/47071 [00:03<00:02, 6210.51 examples/s]
+Generating all_tracks split:  68%|######7   | 31981/47071 [00:03<00:02, 6880.81 examples/s]
+Generating all_tracks split:  74%|#######3  | 34796/47071 [00:04<00:01, 6155.49 examples/s]
+Generating all_tracks split:  81%|########  | 38119/47071 [00:04<00:01, 6694.33 examples/s]
+Generating all_tracks split:  87%|########6 | 40934/47071 [00:05<00:01, 5742.23 examples/s]
+Generating all_tracks split:  93%|#########2| 43749/47071 [00:05<00:00, 6735.69 examples/s]
+Generating all_tracks split:  99%|#########8| 46564/47071 [00:06<00:00, 7874.47 examples/s]
+Generating all_tracks split: 100%|##########| 47071/47071 [00:06<00:00, 7510.29 examples/s]
+Generating test_tracks split:   0%|          | 0/7405 [00:00<?, ? examples/s]
+Generating test_tracks split:  40%|####      | 2989/7405 [00:00<00:00, 9750.77 examples/s]
+Generating test_tracks split:  81%|########  | 5978/7405 [00:00<00:00, 8014.71 examples/s]
+Generating test_tracks split: 100%|##########| 7405/7405 [00:01<00:00, 5823.35 examples/s]
+Generating test_tracks split: 100%|##########| 7405/7405 [00:01<00:00, 5932.63 examples/s]
+Traceback (most recent call last):
+  File "D:\Users\larso\Github\Projects\MusicCRS\experiments\09_retrieval_feasibility.py", line 113, in <module>
+    mats = load_matrices()
+           ^^^^^^^^^^^^^^^
+  File "D:\Users\larso\Github\Projects\MusicCRS\experiments\09_retrieval_feasibility.py", line 64, in load_matrices
+    if arr.dtype == object:
+       ^^^^^^^^^
+AttributeError: 'Column' object has no attribute 'dtype'

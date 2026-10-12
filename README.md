@@ -195,46 +195,37 @@ utterance = AnnotatedUtterance(
 
 ## Using an LLM
 
-You may utilize a large language model (LLM) for implementing the desired functionality. **Note that there is a single LLM call allowed for each agent response.**
+You may utilize an LLM for implementing the desired functionality. You may make several LLM calls per conversation turn, but the agent's response must still be returned within a reasonable time (3-5 seconds).
 
-All teams need to use the same LLM, [Llama-3.3-70B](https://ollama.com/library/llama3.3:70b), which is hosted on the Unix network at UiS on a dedicated GPU server. (For development, you may use a smaller Llama-3.x model hosted locally on your machine.)
+All teams need to use the same LLM, [Gemma 4 31B](https://ai.google.dev/gemma), which is hosted on the Unix network at UiS on a dedicated GPU server and served through Open WebUI.
 
   - To get access, first register at <https://openwebui.ux.uis.no>, using your student number and password for login
-  - Once approved, generate an API token by going to `Settings` -> `Account` and generate a key
+  - Once approved, generate an API key by going to `Settings` -> `Account` and generate a key
 
 You can test the model using `curl` to send a prompt:
 
 ```bash
-curl https://ollama.ux.uis.no/api/generate \
-  -H "Authorization: Bearer YOUR_API_KEY_HERE" \
+curl https://openwebui.ux.uis.no/api/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llama3:8b",
-    "prompt": "What is the capital of Norway?",
-    "stream": false
+    "model": "gorina10.gemma-4-31b",
+    "messages": [
+      {"role": "user", "content": "Hello"}
+    ]
   }'
 ```
 
-Use the ollama client library to generate text programmatically from Python:
+The endpoint is OpenAI-compatible, so you can use the [openai](https://pypi.org/project/openai/) Python library (`pip install openai`) to access it programmatically:
 
 ```python
-from ollama import Client
+from openai import OpenAI
 
-client = Client(
-            host=host,
-            headers={"Authorization": f"Bearer {YOUR_API_KEY_HERE}"},
-        )
-client = Client(host="http://ollama.ux.uis.no")
+client = OpenAI(api_key="YOUR_API_KEY", base_url="https://openwebui.ux.uis.no/api")
 
-# Generate a single completion
-response = client.generate(
-    model="llama3:8b",
-    prompt="What is the capital of Norway?",
-    options={
-      "stream": False,
-      "temperature": 0.7,  # optional: controls randomness
-      "max_tokens": 100, # optional: limits the length of the response
-    }
+response = client.chat.completions.create(
+    model="gorina10.gemma-4-31b", messages=[{"role": "user", "content": "Hello"}]
 )
-print(response["text"])
+
+print(response.choices[0].message.content)
 ```

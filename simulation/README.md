@@ -8,10 +8,10 @@ The simulator conducts multiple dialogues of varying complexity with the MusicCR
 
 ## ⚙️ Configuration
 
-Before launching the simulator, you need to configure it by setting the MusicCRS server URL (<http://127.0.0.1:5000> by default), group ID, upload token, Ollama API key, and the mapping of intents to the specific commands your MusicCRS recognizes in [config.py](config.py).
+Before launching the simulator, you need to configure it by setting the MusicCRS server URL (<http://127.0.0.1:5000> by default), group ID, upload token, Open WebUI API key (`LLM_API_KEY`), and the mapping of intents to the specific commands your MusicCRS recognizes in [config.py](config.py).
 
   * The UPLOAD_TOKEN is unique for each group and has been sent to you by email.
-  * The final version of the simulator will require you to have a key to the Ollama service on uix.uis.no. Don't leave this to the very last minute.
+  * The final version of the simulator will require you to have an API key for Open WebUI at <https://openwebui.ux.uis.no> (see [Using an LLM](../README.md#using-an-llm)). Don't leave this to the very last minute.
   * Make sure you have all the Python packages installed that are listed in [requirements.txt](../requirements.txt).
   * **Crucially, you're not allowed to make changes to any other parts of the simulation code outside config.py.** This is being checked and the simulator will not run if changes are made to the source code.
 
