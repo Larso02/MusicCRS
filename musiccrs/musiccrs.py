@@ -10,6 +10,8 @@ from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
 from openai import OpenAI
 import os
+import json
+import re
 from dotenv import load_dotenv
 
 
@@ -54,6 +56,13 @@ class MusicCRS(Agent):
         )
         self._dialogue_connector.register_agent_utterance(utterance)
 
+    def _playlist_response(self, message: str) -> str:
+        """Return the current playlist state to the frontend."""
+        return "__PLAYLIST_STATE__" + json.dumps({
+            "message": message,
+            "tracks": self._playlist,
+        })
+
     def receive_utterance(self, utterance: Utterance) -> None:
         """Gets called each time there is a new user utterance.
 
@@ -64,7 +73,41 @@ class MusicCRS(Agent):
         """
         response = ""
         dialogue_acts = []
-        if utterance.text.startswith("/info"):
+        command = utterance.text.strip()
+        lowered = command.lower()
+        if lowered in ("/playlist", "show playlist", "show my playlist", "view playlist", "what is in my playlist", "what's in my playlist"):
+            if not self._playlist:
+                response = self._playlist_response("Your playlist is empty.")
+            else:
+                tracks = "\n".join(
+                    f"{i}. {track}"
+                    for i, track in enumerate(self._playlist, start=1)
+                )
+
+                response = self._playlist_response(
+                    f"Your playlist contains {len(self._playlist)} songs:\n{tracks}"
+                )
+        elif lowered in ("/clear", "clear playlist", "clear my playlist", "empty playlist"):
+            self._playlist.clear()
+            response = self._playlist_response("Playlist cleared.")
+        elif lowered.startswith("/add ") or lowered.startswith("add "):
+            name = re.sub(r"^/?add\s+", "", command, flags=re.IGNORECASE).strip()
+            if not name:
+                response = self._playlist_response("Please provide a track name.")
+            elif name.casefold() in (track.casefold() for track in self._playlist):
+                response = self._playlist_response(f"{name} is already in your playlist.")
+            else:
+                self._playlist.append(name)
+                response = self._playlist_response(f"Added {name}.")
+        elif lowered.startswith("/remove ") or lowered.startswith("remove "):
+            name = re.sub(r"^/?remove\s+", "", command, flags=re.IGNORECASE).strip()
+            found = next((t for t in self._playlist if t.casefold() == name.casefold()), None)
+            if found is None:
+                response = self._playlist_response(f"Could not find {name} in your playlist.")
+            else:
+                self._playlist.remove(found)
+                response = self._playlist_response(f"Removed {found}.")        
+        elif utterance.text.startswith("/info"):
             response = self._info()
         elif utterance.text.startswith("/ask_llm "):
             prompt = utterance.text[9:]
@@ -135,5 +178,4 @@ class MusicCRS(Agent):
 
 if __name__ == "__main__":
     platform = FlaskSocketPlatform(MusicCRS)
-    platform.start()
     platform.start()
