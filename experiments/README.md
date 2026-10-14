@@ -36,6 +36,7 @@ Scripts 05-08 need `outputs/ground_truth.json` from the first command.
 | `05_test_check_prototype.py` | first test-split check of the prototype pipeline with weights fixed from script 04 (lam in 0, 0.25, 0.5, 1.0) | `05_test_check_prototype.txt` | ~5 min |
 | `06_verify_run_final.py` | scores the repo implementation `retrieval/run_final.py` on test in memory (does not write predictions.json) | `06_verify_run_final.txt` | ~3 min |
 | `07_verify_K_and_lam.py` | repo implementation: candidate pool K in {300, 1000} x lam in {0.5, 1.0, 2.0} on test | `07_verify_K_and_lam.txt` | ~8 min |
+| `09_retrieval_feasibility.py` | **Part 4 / Part 2 feasibility:** dense (Qwen3 embeddings) vs BM25 vs RRF fusion for text-only requests, and embedding-centroid vs artist/album heuristic for playlist-based recommendation; also CPU latency. Needs ~2 GB of downloads on first run; loads the model in float32 (default bfloat16 is ~100x slower on CPUs without bf16). Train sample, nothing on test. | `09_retrieval_feasibility.txt` | ~20 min |
 | `08_hub_analysis.py` | repo implementation with the penalty off: how often tracks are recommended vs how often they are correct (the "hubness" evidence), plus K=1000 numbers for lam 0 and 1 | `08_hub_analysis.txt` | ~4 min |
 
 ## Producing the submission file

@@ -23,6 +23,7 @@ import bm25s
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+import torch
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 
@@ -119,7 +120,8 @@ sample = random.sample(train, N_TURNS)
 mats = load_matrices()
 
 print("loading query encoder...", flush=True)
-model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B")
+# float32 is essential on CPUs without bfloat16 support (default dtype was ~100x slower here)
+model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B", model_kwargs={"dtype": torch.float32})
 texts = [r["user_message"] for r in sample]
 t0 = time.time()
 qvec = model.encode(texts, prompt_name="query", batch_size=16, normalize_embeddings=True, show_progress_bar=False)
