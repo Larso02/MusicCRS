@@ -5,3 +5,25 @@ outputs/
 node_modules/
 .env
 cache/
+# Python virtual environment
+.venv/
+venv/
+
+# Environment variables / API keys
+.env
+.env.*
+!.env_example
+
+# Python generated files
+__pycache__/
+*.pyc
+
+# Node.js dependencies
+node_modules/
+
+# Generated dialogue logs
+dialogue_export/
+
+# Build files
+build/
+dist/

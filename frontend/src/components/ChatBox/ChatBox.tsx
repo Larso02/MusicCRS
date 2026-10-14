@@ -35,6 +35,8 @@ export default function ChatBox() {
   const [chatMessages, setChatMessages] = useState<JSX.Element[]>([]);
   const [chatButtons, setChatButtons] = useState<JSX.Element[]>([]);
   const [inputValue, setInputValue] = useState<string>("");
+  const [playlist, setPlaylist] = useState<string[]>([]);
+  const [newTrack, setNewTrack] = useState("");
   const chatMessagesRef = useRef(chatMessages);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -79,6 +81,16 @@ export default function ChatBox() {
   const handelMessage = useCallback(
     (message: ChatMessage) => {
       if (!!message.text) {
+        let displayText = message.text;
+        if (displayText.startsWith("__PLAYLIST_STATE__")) {
+          try {
+            const state = JSON.parse(displayText.slice("__PLAYLIST_STATE__".length));
+            if (Array.isArray(state.tracks)) setPlaylist(state.tracks);
+            displayText = state.message || "Playlist updated.";
+          } catch (error) {
+            console.error("Invalid playlist state:", error);
+          }
+        }
         const image_url = message.attachments?.find(
           (attachment) => attachment.type === "images"
         )?.payload.images?.[0];
@@ -86,7 +98,7 @@ export default function ChatBox() {
           <AgentChatMessage
             key={chatMessagesRef.current.length}
             feedback={config.useFeedback ? giveFeedback : null}
-            message={message.text}
+            message={displayText}
             image_url={image_url}
           />
         );
@@ -131,6 +143,7 @@ export default function ChatBox() {
     onRestart(() => {
       setChatMessages([]);
       setChatButtons([]);
+      setPlaylist([]);
     });
   }, [onRestart]);
 
@@ -160,6 +173,32 @@ export default function ChatBox() {
             </div>
           </div>
         </MDBCardBody>
+        <section className="playlist-panel" aria-label="Current playlist">
+          <div className="playlist-header">
+            <strong>My Playlist ({playlist.length})</strong>
+            <button type="button" className="btn btn-sm btn-outline-danger" disabled={!playlist.length}
+              onClick={() => sendMessage({ message: "/clear" })}>Clear</button>
+          </div>
+          <div className="playlist-items">
+            {playlist.length === 0 ? <p className="text-muted mb-1">No tracks yet.</p> : playlist.map((track, index) => (
+              <div className="playlist-item" key={`${track}-${index}`}>
+                <span>{index + 1}. {track}</span>
+                <button type="button" className="btn btn-sm btn-outline-secondary"
+                  onClick={() => sendMessage({ message: `/remove ${track}` })}
+                  aria-label={`Remove ${track}`}>Remove</button>
+              </div>
+            ))}
+          </div>
+          <form className="playlist-add" onSubmit={(e) => {
+            e.preventDefault();
+            if (newTrack.trim()) sendMessage({ message: `/add ${newTrack.trim()}` });
+            setNewTrack("");
+          }}>
+            <input className="form-control form-control-sm" value={newTrack}
+              onChange={(e) => setNewTrack(e.target.value)} placeholder="Track title (R1 demo)" />
+            <button className="btn btn-sm btn-primary" type="submit">Add</button>
+          </form>
+        </section>
         <MDBCardFooter className="text-muted d-flex justify-content-start align-items-center p-2">
           <form className="d-flex flex-grow-1" onSubmit={handleInput}>
             <input
