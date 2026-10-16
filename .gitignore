@@ -27,3 +27,6 @@ dialogue_export/
 # Build files
 build/
 dist/
+
+# Generated track database
+data/*.db
