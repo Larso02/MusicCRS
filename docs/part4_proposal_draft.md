@@ -1,45 +1,54 @@
-# Part 4 proposal draft
-
+# Part 4 proposal draft (v2, after lecturer feedback)
 
 
 **Feedback-aware playlist refinement**
 
-**Idea.** Users refine recommendations conversationally ("I like the first two, but too heavy; more alternative rock", "make it more varied"). One LLM call converts each feedback sentence into structured positives and negatives (tracks, artists, tags), which a session profile accumulates across turns. Candidates from our Part 1 retriever are re-ranked with **Rocchio relevance feedback** (Rocchio, 1971): q' = αq + β·mean(liked) − γ·mean(disliked), over a combined representation: BM25 fields including tags, plus the TalkPlay metadata embeddings. A **Maximal Marginal Relevance** step (Carbonell & Goldstein, SIGIR 1998) trades relevance against similarity to already selected tracks; requests such as "more varied" set its strength. Ranking uses no LLM, so responses stay within 3-5 s, and the system briefly explains how the feedback changed the list.
+**Idea.** Users refine recommendations conversationally ("I like the first two, but too heavy; more alternative rock", "make it more varied"). One LLM call turns each feedback sentence into structured positives and negatives (tracks, artists, tags), accumulated in a session profile. Candidates from our Part 1 retriever are re-ranked with **Rocchio relevance feedback** (Rocchio, 1971): q' = αq + β·mean(liked) − γ·mean(disliked), over tags/artists plus TalkPlay metadata embeddings. **Maximal Marginal Relevance** (Carbonell & Goldstein, SIGIR 1998) trades relevance against similarity to selected tracks; "more varied" sets its strength. Playlist actions also give implicit feedback: adding a recommended track counts as positive, removing it as negative.
 
-**Evaluation.** Offline on TalkPlay train sessions, with previously played tracks as implicit feedback: nDCG@20 against our Part 1 retriever. Scripted scenarios: share of top-5 results containing a rejected tag/artist before vs. after feedback; intra-list diversity before vs. after MMR; parsing accuracy on 30 labelled sentences.
+**Evaluation.** Offline on TalkPlay train sessions, treating previously played tracks as implicit feedback: nDCG@20 against our Part 1 retriever. Scripted scenarios: share of top-5 results with a rejected tag/artist before vs. after feedback; intra-list diversity before vs. after MMR; parsing accuracy on 30 labelled sentences.
+
+**General condition.** Responses within 3-5 s: ranking needs no LLM, at most 3 LLM calls per turn.
 
 | Planned feature | Points |
 |---|---|
-| Parse positive/negative feedback (tracks, artists, tags) via LLM; at least 85% correct on 30 labelled sentences | 3 |
+| Parse positive/negative feedback (tracks, artists, tags) via LLM; at least 85% correct on 30 labelled sentences | 2 |
 | Session preference profile, updated over several turns | 2 |
-| Rocchio re-ranking (BM25/tags + embeddings); rejected-attribute rate in top-5 cut by at least 50% while keeping relevance | 4 |
+| Rocchio re-ranking; rejected-attribute rate in top-5 cut by at least 30% while keeping relevance | 4 |
 | MMR diversity with user-controlled strength | 2 |
+| Implicit feedback from playlist actions (add/remove of recommended tracks) updating the profile | 1 |
+| Grounded explanations: per-track reason computed from score components (liked artist/tag matched, penalised attribute) plus a before/after list diff; the LLM only phrases them | 2 |
 | Quantitative evaluation vs. Part 1 baseline (nDCG@20, rejected-attribute rate, intra-list diversity) | 2 |
-| Latency up to 5 s, at most 3 LLM calls per turn; short explanation of the feedback effect | 2 |
 | **Total** | **15** |
-
 
 ---
 
-## Background
+## Background (not for Canvas)
 
-### Why this combined proposal
-- Merges the two proposals from the project partner (relevance feedback + diversity-aware re-ranking) into one feature, because both are re-ranking stages over the same retriever, and two people cannot build two full features alongside Part 2 and Part 3.
-- Rocchio relevance feedback is core course material (same family as the RM3 pseudo-relevance feedback from assignment A9), and MMR is a standard citable diversity method.
-- Motivated by our Part 1 findings: implicit positive feedback (previously played tracks, same artist/album) improved ranking by 20-44% and the target's artist already appeared in 60.7% of turns (see `docs/part1_experiment_log.md`). Explicit natural-language feedback, positive and negative, is the natural generalisation.
+### Lecturer feedback and how v2 answers it
+| Feedback | Change |
+|---|---|
+| Rocchio goal quite ambitious | Threshold softened from 50% to 30% rejected-attribute reduction; representation kept simple (tags/artists + metadata embedding). |
+| Task 1 (parsing) looks like 2p since evaluation is scored separately | Parsing 3p -> 2p. |
+| Add one more small 1p task | Implicit feedback from playlist actions (add = positive, remove = negative). |
+| Latency should be a general condition | Removed from the table; stated as a general condition. |
+| Explanations: keep, but add value beyond asking the LLM | Explanations are computed from score components (matched liked artist/tag, penalised attribute) plus a before/after diff; the LLM only phrases them. 2p. |
+
+### Why this proposal
+- Relevance feedback (Rocchio) is course material, same family as the RM3 pseudo-relevance feedback in assignment A9; MMR is a standard citable diversity method.
+- Part 1 evidence (`docs/part1_experiment_log.md`): implicit positive feedback (previously played tracks, same artist/album) improved ranking by 20-44% and the target's artist already appeared in 60.7% of turns. Explicit positive and negative feedback is the natural generalisation.
 
 ### Evidence from the feasibility run (`experiments/09_retrieval_feasibility.py`, 1,500 train turns, nDCG@20)
-- Text-only request: BM25 0.0655; metadata embedding alone 0.0645; BM25 + metadata embedding (RRF) 0.0829 (+27%); attributes and lyrics embeddings weak (0.0246, 0.0131) and hurt the fusion.
-- Playlist-based next track: artist/album/popularity heuristic 0.2190; embedding centroids alone: metadata 0.1457, CF 0.1150, attributes 0.0676, audio 0.0348; crude heuristic + embedding combination gave no gain (0.2199).
-- Latency on a 2015 laptop CPU: 0.4-0.7 s to embed one query (float32; the default bfloat16 was ~100x slower), 84 ms for a 47k x 1024 similarity scan.
-- Consequence: build the profile on symbolic features (artist, album, tags) plus the **metadata** embedding only; do not rely on attributes/lyrics/audio embeddings.
+- Text-only request: BM25 0.0655; metadata embedding 0.0645; BM25 + metadata embedding (RRF) 0.0829 (+27%); attributes/lyrics embeddings weak and hurt the fusion.
+- Playlist-based next track: artist/album/popularity heuristic 0.2190; embedding centroids alone: metadata 0.1457, CF 0.1150, attributes 0.0676, audio 0.0348; crude heuristic + embedding combination gave no gain.
+- Latency on a 2015 laptop CPU: 0.4-0.7 s per query embedding (float32; default bfloat16 ~100x slower), 84 ms for a 47k x 1024 scan.
+- Consequence: profile on artist/album/tags plus the **metadata** embedding only.
 
-### Risks and how the rubric handles them
-- Thresholds (85% parsing accuracy, 50% reduction in rejected-attribute rate) are chosen to be achievable: a 31B model parses feedback well, and a hard-ish penalty on rejected tags/artists reduces their share directly. Revisit them with the lecturer if you want different numbers.
-- There is no "genre" field in the catalog: use `tag_list` (Last.fm-style tags such as "relaxing", "piano") and embeddings. Do not write "genre" in the final text.
-- Scope: Part 2 (due Oct 21/28) and Part 3 (Oct 28) come first. If time gets tight, drop the explanation feature and the "more varied" parsing first; keep the Rocchio core and the evaluation.
-- The "rejected-attribute rate" and "intra-list diversity" evaluations need hand-written scenarios: start collecting 30 feedback sentences and 5-10 scenarios during Part 2 so they exist when implementation starts.
-
+### Notes for implementation
+- No "genre" field exists: use `tag_list` and embeddings.
+- Implicit feedback needs the playlist actions to carry the recommended track ids (ties in with the Part 2 playlist record: `track_id`, name, artist).
+- Explanations: log per-track score components (artist match, tag match, penalty, MMR term) so reasons are real, not generated.
+- Start collecting the 30 labelled feedback sentences and 5-10 scenarios during Part 2.
+- Priority if time is short: keep Rocchio + profile + evaluation; drop MMR strength parsing and the list diff first.
 
 ### References for the Canvas text
 - Rocchio, J. J. (1971). Relevance feedback in information retrieval. In *The SMART Retrieval System*, pp. 313-323. Prentice-Hall.
