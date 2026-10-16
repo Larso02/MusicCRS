@@ -21,6 +21,16 @@ import { AgentChatMessage, UserChatMessage } from "../ChatMessage";
 import { ChatMessage } from "../../types";
 import { ConfigContext } from "../../contexts/ConfigContext";
 
+
+interface PlaylistTrack {
+  track_id: string;
+  track_name: string;
+  artist_name: string[];
+  album_name: string[];
+  popularity: number;
+}
+
+
 export default function ChatBox() {
   const { config } = useContext(ConfigContext);
   const { user } = useContext(UserContext);
@@ -35,7 +45,7 @@ export default function ChatBox() {
   const [chatMessages, setChatMessages] = useState<JSX.Element[]>([]);
   const [chatButtons, setChatButtons] = useState<JSX.Element[]>([]);
   const [inputValue, setInputValue] = useState<string>("");
-  const [playlist, setPlaylist] = useState<string[]>([]);
+  const [playlist, setPlaylist] = useState<PlaylistTrack[]>([]);
   const [newTrack, setNewTrack] = useState("");
   const chatMessagesRef = useRef(chatMessages);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -180,14 +190,32 @@ export default function ChatBox() {
               onClick={() => sendMessage({ message: "/clear" })}>Clear</button>
           </div>
           <div className="playlist-items">
-            {playlist.length === 0 ? <p className="text-muted mb-1">No tracks yet.</p> : playlist.map((track, index) => (
-              <div className="playlist-item" key={`${track}-${index}`}>
-                <span>{index + 1}. {track}</span>
-                <button type="button" className="btn btn-sm btn-outline-secondary"
-                  onClick={() => sendMessage({ message: `/remove ${track}` })}
-                  aria-label={`Remove ${track}`}>Remove</button>
-              </div>
-            ))}
+            {playlist.length === 0 ? (
+              <p className="text-muted mb-1">No tracks yet.</p>
+            ) : (
+              playlist.map((track, index) => (
+                <div className="playlist-item" key={track.track_id}>
+                  <span>
+                    {index + 1}. {track.track_name}
+                    <small className="text-muted">
+                      {" — "}{track.artist_name.join(", ")}
+                    </small>
+                  </span>
+
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary"
+                    onClick={() =>
+                      sendMessage({ message: `/remove ${track.track_id}` })
+                    }
+                    aria-label={`Remove ${track.track_name}`}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))
+        )}
+
           </div>
           <form className="playlist-add" onSubmit={(e) => {
             e.preventDefault();
@@ -195,7 +223,7 @@ export default function ChatBox() {
             setNewTrack("");
           }}>
             <input className="form-control form-control-sm" value={newTrack}
-              onChange={(e) => setNewTrack(e.target.value)} placeholder="Track title (R1 demo)" />
+              onChange={(e) => setNewTrack(e.target.value)} placeholder="Song title or title by artist" />
             <button className="btn btn-sm btn-primary" type="submit">Add</button>
           </form>
         </section>

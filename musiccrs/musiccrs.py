@@ -1,4 +1,12 @@
+
 """MusicCRS conversational agent."""
+
+import json
+import os
+import re
+
+from dotenv import load_dotenv
+from openai import OpenAI
 
 from dialoguekit.core.annotated_utterance import AnnotatedUtterance
 from dialoguekit.core.dialogue_act import DialogueAct
@@ -8,21 +16,15 @@ from dialoguekit.core.utterance import Utterance
 from dialoguekit.participant.agent import Agent
 from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
-from openai import OpenAI
-import os
-import json
-import re
-from dotenv import load_dotenv
+
+from track_database import TrackDatabase
 
 
 load_dotenv()
 
-
 LLM_BASE_URL = "https://openwebui.ux.uis.no/api"
 LLM_MODEL = "gorina10.gemma-4-31b"
-LLM_API_KEY = os.getenv("MY_OLLAMA_API_KEY")  # Load from .env or environment variable
-
-
+LLM_API_KEY = os.getenv("MY_OLLAMA_API_KEY")
 
 _INTENT_OPTIONS = Intent("OPTIONS")
 
@@ -33,14 +35,21 @@ class MusicCRS(Agent):
         super().__init__(id="MusicCRS")
 
         if use_llm:
-            self._llm = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+            self._llm = OpenAI(
+                api_key=LLM_API_KEY,
+                base_url=LLM_BASE_URL,
+            )
         else:
             self._llm = None
 
-        self._playlist = []  # Stores the current playlist
+        # TalkPlay database containing verified tracks.
+        self._db = TrackDatabase()
+
+        # Store only track IDs, never arbitrary song names.
+        self._playlist: list[str] = []
 
     def welcome(self) -> None:
-        """Sends the agent's welcome message."""
+        """Send the agent's welcome message."""
         utterance = AnnotatedUtterance(
             "Hello, I'm MusicCRS. What are you in the mood for?",
             participant=DialogueParticipant.AGENT,
@@ -48,7 +57,7 @@ class MusicCRS(Agent):
         self._dialogue_connector.register_agent_utterance(utterance)
 
     def goodbye(self) -> None:
-        """Quits the conversation."""
+        """End the conversation."""
         utterance = AnnotatedUtterance(
             "It was nice talking to you. Bye",
             dialogue_acts=[DialogueAct(intent=self.stop_intent)],
@@ -56,82 +65,308 @@ class MusicCRS(Agent):
         )
         self._dialogue_connector.register_agent_utterance(utterance)
 
+    # --------------------------------------------------
+    # Playlist helpers
+    # --------------------------------------------------
+
+    def _playlist_tracks(self) -> list[dict]:
+        """Resolve playlist IDs into database track records."""
+        tracks = []
+
+        for track_id in self._playlist:
+            track = self._db.get_track(track_id)
+
+            if track is not None:
+                tracks.append(track)
+
+        return tracks
+
+    @staticmethod
+    def _track_label(track: dict) -> str:
+        """Return a readable track title and artist."""
+        artists = ", ".join(track["artist_name"])
+        return f"{track['track_name']} — {artists}"
+
     def _playlist_response(self, message: str) -> str:
-        """Return the current playlist state to the frontend."""
-        return "__PLAYLIST_STATE__" + json.dumps({
-            "message": message,
-            "tracks": self._playlist,
-        })
+        """Send the current playlist state to the React frontend."""
+        return "__PLAYLIST_STATE__" + json.dumps(
+            {
+                "message": message,
+                "tracks": self._playlist_tracks(),
+            },
+            ensure_ascii=False,
+        )
+
+    # --------------------------------------------------
+    # Add track
+    # --------------------------------------------------
+
+    def _add_track(self, query: str) -> str:
+        """Add a verified TalkPlay track to the playlist."""
+        query = query.strip()
+
+        if not query:
+            return self._playlist_response(
+                "Please provide a track name."
+            )
+
+        # First check whether the input is a track ID.
+        track = self._db.get_track(query)
+
+        if track is None:
+            # Support:
+            # "Yellow"
+            # "Yellow by Coldplay"
+            parts = re.split(
+                r"\s+by\s+",
+                query,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )
+
+            title = parts[0].strip()
+            artist = parts[1].strip() if len(parts) == 2 else None
+
+            matches = self._db.search_tracks(
+                title,
+                artist=artist,
+                limit=10,
+            )
+
+            if not matches:
+                return self._playlist_response(
+                    f"I couldn't find '{query}' in the TalkPlay catalog."
+                )
+
+            # Prefer an exact title match.
+            exact_matches = [
+                candidate
+                for candidate in matches
+                if candidate["track_name"].casefold()
+                == title.casefold()
+            ]
+
+            if not exact_matches:
+                suggestions = ", ".join(
+                    self._track_label(candidate)
+                    for candidate in matches[:3]
+                )
+
+                return self._playlist_response(
+                    f"No exact match for '{query}'. "
+                    f"Possible matches: {suggestions}"
+                )
+
+            # Search results are ranked by popularity.
+            # R4 will add explicit ambiguity handling.
+            track = exact_matches[0]
+
+        track_id = track["track_id"]
+
+        if track_id in self._playlist:
+            return self._playlist_response(
+                f"{self._track_label(track)} "
+                "is already in your playlist."
+            )
+
+        self._playlist.append(track_id)
+
+        return self._playlist_response(
+            f"Added {self._track_label(track)}."
+        )
+
+    # --------------------------------------------------
+    # Remove track
+    # --------------------------------------------------
+
+    def _remove_track(self, query: str) -> str:
+        """Remove a playlist track by ID or title and artist."""
+        query = query.strip()
+
+        if not query:
+            return self._playlist_response(
+                "Please specify a track to remove."
+            )
+
+        # React Remove buttons send the unique track ID.
+        if query in self._playlist:
+            track = self._db.get_track(query)
+            self._playlist.remove(query)
+
+            if track is not None:
+                return self._playlist_response(
+                    f"Removed {self._track_label(track)}."
+                )
+
+            return self._playlist_response("Track removed.")
+
+        # Support title-based removal:
+        # "Yellow"
+        # "Yellow by Coldplay"
+        parts = re.split(
+            r"\s+by\s+",
+            query,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )
+
+        title = parts[0].strip().casefold()
+        artist = (
+            parts[1].strip().casefold()
+            if len(parts) == 2
+            else None
+        )
+
+        matches = [
+            track
+            for track in self._playlist_tracks()
+            if track["track_name"].casefold() == title
+            and (
+                artist is None
+                or any(
+                    artist in name.casefold()
+                    for name in track["artist_name"]
+                )
+            )
+        ]
+
+        if not matches:
+            return self._playlist_response(
+                f"Could not find '{query}' in your playlist."
+            )
+
+        if len(matches) > 1:
+            choices = ", ".join(
+                self._track_label(track)
+                for track in matches
+            )
+
+            return self._playlist_response(
+                f"Multiple tracks match '{query}': {choices}. "
+                "Please specify the artist or use the Remove button."
+            )
+
+        track = matches[0]
+        self._playlist.remove(track["track_id"])
+
+        return self._playlist_response(
+            f"Removed {self._track_label(track)}."
+        )
+
+    # --------------------------------------------------
+    # Dialogue handling
+    # --------------------------------------------------
 
     def receive_utterance(self, utterance: Utterance) -> None:
-        """Gets called each time there is a new user utterance.
-
-        For now the agent only understands specific command.
-
-        Args:
-            utterance: User utterance.
-        """
+        """Handle a new user message."""
         response = ""
         dialogue_acts = []
+
         command = utterance.text.strip()
         lowered = command.lower()
-        if lowered in ("/playlist", "show playlist", "show my playlist", "view playlist", "what is in my playlist", "what's in my playlist"):
-            if not self._playlist:
-                response = self._playlist_response("Your playlist is empty.")
+
+        # View playlist.
+        if lowered in (
+            "/playlist",
+            "show playlist",
+            "show my playlist",
+            "view playlist",
+            "what is in my playlist",
+            "what's in my playlist",
+        ):
+            tracks = self._playlist_tracks()
+
+            if not tracks:
+                response = self._playlist_response(
+                    "Your playlist is empty."
+                )
             else:
-                tracks = "\n".join(
-                    f"{i}. {track}"
-                    for i, track in enumerate(self._playlist, start=1)
+                listing = "\n".join(
+                    f"{i}. {self._track_label(track)}"
+                    for i, track in enumerate(tracks, start=1)
                 )
 
+                count = len(tracks)
+                word = "song" if count == 1 else "songs"
+
                 response = self._playlist_response(
-                    f"Your playlist contains {len(self._playlist)} songs:\n{tracks}"
+                    f"Your playlist contains "
+                    f"{count} {word}:\n{listing}"
                 )
-        elif lowered in ("/clear", "clear playlist", "clear my playlist", "empty playlist"):
+
+        # Clear playlist.
+        elif lowered in (
+            "/clear",
+            "clear playlist",
+            "clear my playlist",
+            "empty playlist",
+        ):
             self._playlist.clear()
-            response = self._playlist_response("Playlist cleared.")
+
+            response = self._playlist_response(
+                "Playlist cleared."
+            )
+
+        # Add a verified track.
         elif lowered.startswith("/add ") or lowered.startswith("add "):
-            name = re.sub(r"^/?add\s+", "", command, flags=re.IGNORECASE).strip()
-            if not name:
-                response = self._playlist_response("Please provide a track name.")
-            elif name.casefold() in (track.casefold() for track in self._playlist):
-                response = self._playlist_response(f"{name} is already in your playlist.")
-            else:
-                self._playlist.append(name)
-                response = self._playlist_response(f"Added {name}.")
+            query = re.sub(
+                r"^/?add\s+",
+                "",
+                command,
+                flags=re.IGNORECASE,
+            ).strip()
+
+            response = self._add_track(query)
+
+        # Remove a track.
         elif lowered.startswith("/remove ") or lowered.startswith("remove "):
-            name = re.sub(r"^/?remove\s+", "", command, flags=re.IGNORECASE).strip()
-            found = next((t for t in self._playlist if t.casefold() == name.casefold()), None)
-            if found is None:
-                response = self._playlist_response(f"Could not find {name} in your playlist.")
-            else:
-                self._playlist.remove(found)
-                response = self._playlist_response(f"Removed {found}.")        
-        elif utterance.text.startswith("/info"):
+            query = re.sub(
+                r"^/?remove\s+",
+                "",
+                command,
+                flags=re.IGNORECASE,
+            ).strip()
+
+            response = self._remove_track(query)
+
+        # Information about the agent.
+        elif lowered == "/info":
             response = self._info()
-        elif utterance.text.startswith("/ask_llm "):
-            prompt = utterance.text[9:]
+
+        # Direct LLM interaction.
+        elif lowered.startswith("/ask_llm "):
+            prompt = command[len("/ask_llm "):]
             response = self._ask_llm(prompt)
-        elif utterance.text.startswith("/options"):
+
+        # DialogueKit quick reply options.
+        elif lowered == "/options":
             options = [
                 "Play some jazz music",
                 "Recommend me some pop songs",
                 "Create a workout playlist",
             ]
+
             response = self._options(options)
+
             dialogue_acts = [
                 DialogueAct(
                     intent=_INTENT_OPTIONS,
                     annotations=[
-                        SlotValueAnnotation("option", option) for option in options
+                        SlotValueAnnotation("option", option)
+                        for option in options
                     ],
                 )
             ]
-        elif utterance.text == "/quit":
+
+        # End conversation.
+        elif lowered == "/quit":
             self.goodbye()
             return
+
         else:
-            response = "I'm sorry, I don't understand that command."
+            response = (
+                "I'm sorry, I don't understand that command."
+            )
 
         self._dialogue_connector.register_agent_utterance(
             AnnotatedUtterance(
@@ -141,37 +376,46 @@ class MusicCRS(Agent):
             )
         )
 
-    # --- Response handlers ---
+    # --------------------------------------------------
+    # Other response handlers
+    # --------------------------------------------------
 
     def _info(self) -> str:
-        """Gives information about the agent."""
-        return "I am MusicCRS, a conversational recommender system for music."
+        """Describe the MusicCRS agent."""
+        return (
+            "I am MusicCRS, a conversational recommender "
+            "system for music."
+        )
 
     def _ask_llm(self, prompt: str) -> str:
-        """Calls a large language model (LLM) with the given prompt.
-
-        Args:
-            prompt: Prompt to send to the LLM.
-
-        Returns:
-            Response from the LLM.
-        """
+        """Send a prompt to the configured LLM."""
         if not self._llm:
-            return "The agent is not configured to use an LLM"
+            return "The agent is not configured to use an LLM."
 
         llm_response = self._llm.chat.completions.create(
             model=LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,  # optional: controls randomness
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            temperature=0.7,
         )
 
-        return f"LLM response: {llm_response.choices[0].message.content}"
+        return (
+            f"LLM response: "
+            f"{llm_response.choices[0].message.content}"
+        )
 
     def _options(self, options: list[str]) -> str:
-        """Presents options to the user."""
+        """Present DialogueKit quick reply options."""
         return (
             "Here are some options:\n<ol>\n"
-            + "\n".join([f"<li>{option}</li>" for option in options])
+            + "\n".join(
+                f"<li>{option}</li>"
+                for option in options
+            )
             + "</ol>\n"
         )
 
