@@ -1,6 +1,6 @@
 
 """MusicCRS conversational agent."""
-
+import html
 import json
 import os
 import re
@@ -17,7 +17,7 @@ from dialoguekit.participant.agent import Agent
 from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
 
-from track_database import TrackDatabase
+from track_database import TrackDatabase, norm
 
 
 load_dotenv()
@@ -27,8 +27,21 @@ LLM_MODEL = "gorina10.gemma-4-31b"
 LLM_API_KEY = os.getenv("MY_OLLAMA_API_KEY")
 
 _INTENT_OPTIONS = Intent("OPTIONS")
+_INTENT_PLAYLIST = Intent("PLAYLIST_STATE")
+_ADD_RE = re.compile(
+    r"^(?:/add\s+|(?:please\s+)?(?:add|put|queue)\s+(?:the\s+(?:song|track|)\s+)?)"
+    r"(?P<q>.+?)(?:\s+(?:to|on|in|into)\s+(?:my|the)\s+(?:play ?list|queue))?\s*$",
+    re.I
+)
+_REMOVE_RE = re.compile(
+    r"^(?:/remove\s+|/del\s+|(?:please\s+)?(?:remove|delete|drop|take out)\s+"
+    r"(?:the\s+(?:song|track)\s+)?)"
+    r"(?P<q>.+?)(?:\s+from\s+(?:my|the)\s+(?:play ?list|queue))?\s*$",
+    re.I,
+)
 
-
+_VIEW = ("/playlist", "/list", "show playlist", "show my playlist", "view playlist", "what's in my playlist", "what is in my playlist")
+_CLEAR = ("/clear", "clear playlist", "clear my playlist", "empty playlist")
 class MusicCRS(Agent):
     def __init__(self, use_llm: bool = True):
         """Initialize MusicCRS agent."""
@@ -70,31 +83,20 @@ class MusicCRS(Agent):
     # --------------------------------------------------
 
     def _playlist_tracks(self) -> list[dict]:
-        """Resolve playlist IDs into database track records."""
-        tracks = []
-
-        for track_id in self._playlist:
-            track = self._db.get_track(track_id)
-
-            if track is not None:
-                tracks.append(track)
-
-        return tracks
+        return self._db.get_tracks(self._playlist)
 
     @staticmethod
     def _track_label(track: dict) -> str:
         """Return a readable track title and artist."""
         artists = ", ".join(track["artist_name"])
-        return f"{track['track_name']} — {artists}"
+        return html.escape(f"{track['track_name']} - {artists}")
 
-    def _playlist_response(self, message: str) -> str:
-        """Send the current playlist state to the React frontend."""
-        return "__PLAYLIST_STATE__" + json.dumps(
-            {
-                "message": message,
-                "tracks": self._playlist_tracks(),
-            },
-            ensure_ascii=False,
+    def _playlist_act(self) -> DialogueAct:
+        return DialogueAct(
+            intent=_INTENT_PLAYLIST,
+            annotations=[
+                SlotValueAnnotation("track", json.dumps(t, ensure_ascii=False)) for t in self._playlist_tracks()
+            ],
         )
 
     # --------------------------------------------------
@@ -106,74 +108,51 @@ class MusicCRS(Agent):
         query = query.strip()
 
         if not query:
-            return self._playlist_response(
-                "Please provide a track name."
-            )
+            return "Please provide a track name."
+            
 
         # First check whether the input is a track ID.
         track = self._db.get_track(query)
+        others = 0
 
         if track is None:
-            # Support:
-            # "Yellow"
-            # "Yellow by Coldplay"
-            parts = re.split(
-                r"\s+by\s+",
-                query,
-                maxsplit=1,
-                flags=re.IGNORECASE,
-            )
-
-            title = parts[0].strip()
-            artist = parts[1].strip() if len(parts) == 2 else None
-
-            matches = self._db.search_tracks(
-                title,
-                artist=artist,
-                limit=10,
-            )
-
+            matches = self._db.find_tracks(query, limit=10)
             if not matches:
-                return self._playlist_response(
-                    f"I couldn't find '{query}' in the TalkPlay catalog."
-                )
-
-            # Prefer an exact title match.
-            exact_matches = [
-                candidate
-                for candidate in matches
-                if candidate["track_name"].casefold()
-                == title.casefold()
-            ]
-
-            if not exact_matches:
+                return f"I couldn't find '{html.escape(query)}' in the catalog."
+            
+            exact = [m for m in matches if m["exact"]]
+            if not exact:
                 suggestions = ", ".join(
-                    self._track_label(candidate)
-                    for candidate in matches[:3]
+                    self._track_label(m)
+                    for m in matches[:3]
                 )
 
-                return self._playlist_response(
-                    f"No exact match for '{query}'. "
-                    f"Possible matches: {suggestions}"
+                return (
+                    f"No exact match for '{html.escape(query)}'. "
+                    f"Did you mean: {suggestions}?"
                 )
 
-            # Search results are ranked by popularity.
-            # R4 will add explicit ambiguity handling.
-            track = exact_matches[0]
+            track = exact[0]
+            others = len(exact) - 1
 
+        
         track_id = track["track_id"]
-
         if track_id in self._playlist:
-            return self._playlist_response(
+            return (
                 f"{self._track_label(track)} "
                 "is already in your playlist."
             )
 
         self._playlist.append(track_id)
-
-        return self._playlist_response(
-            f"Added {self._track_label(track)}."
+        message = (
+            f"Added {self._track_label(track)} to your playlist."
         )
+        if others:
+            noun = "track shares" if others == 1 else "tracks share"
+            message += f" {others} other {noun} this title; say 'add <title> by <artist>' to pick another."
+
+
+        return message
 
     # --------------------------------------------------
     # Remove track
@@ -184,7 +163,7 @@ class MusicCRS(Agent):
         query = query.strip()
 
         if not query:
-            return self._playlist_response(
+            return (
                 "Please specify a track to remove."
             )
 
@@ -193,63 +172,40 @@ class MusicCRS(Agent):
             track = self._db.get_track(query)
             self._playlist.remove(query)
 
-            if track is not None:
-                return self._playlist_response(
-                    f"Removed {self._track_label(track)}."
-                )
-
-            return self._playlist_response("Track removed.")
+            return f"Removed {self._track_label(track)}." if track else "Removed track."
 
         # Support title-based removal:
         # "Yellow"
         # "Yellow by Coldplay"
-        parts = re.split(
-            r"\s+by\s+",
-            query,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )
-
-        title = parts[0].strip().casefold()
-        artist = (
-            parts[1].strip().casefold()
-            if len(parts) == 2
-            else None
-        )
+        words = norm(re.sub(r"\s+by\s+", " ", query, flags=re.I)).split()
+        if not words:
+            return "Please specify a track to remove."
 
         matches = [
-            track
-            for track in self._playlist_tracks()
-            if track["track_name"].casefold() == title
-            and (
-                artist is None
-                or any(
-                    artist in name.casefold()
-                    for name in track["artist_name"]
-                )
-            )
+            t
+            for t in self._playlist_tracks()
+            if set(words) <= set(norm(t["track_name"] + " " + " ".join(t["artist_name"])).split())
         ]
 
         if not matches:
-            return self._playlist_response(
-                f"Could not find '{query}' in your playlist."
-            )
+            return f"Could not find '{html.escape(query)}' in your playlist."
+            
 
         if len(matches) > 1:
             choices = ", ".join(
-                self._track_label(track)
-                for track in matches
+                self._track_label(t)
+                for t in matches
             )
 
-            return self._playlist_response(
-                f"Multiple tracks match '{query}': {choices}. "
+            return (
+                f"Multiple tracks match: {choices}. "
                 "Please specify the artist or use the Remove button."
             )
 
         track = matches[0]
         self._playlist.remove(track["track_id"])
 
-        return self._playlist_response(
+        return (
             f"Removed {self._track_label(track)}."
         )
 
@@ -259,75 +215,36 @@ class MusicCRS(Agent):
 
     def receive_utterance(self, utterance: Utterance) -> None:
         """Handle a new user message."""
-        response = ""
         dialogue_acts = []
-
         command = utterance.text.strip()
         lowered = command.lower()
+        m_add, m_remove = _ADD_RE.match(command), _REMOVE_RE.match(command)
 
         # View playlist.
-        if lowered in (
-            "/playlist",
-            "show playlist",
-            "show my playlist",
-            "view playlist",
-            "what is in my playlist",
-            "what's in my playlist",
-        ):
+        if lowered in _VIEW:
             tracks = self._playlist_tracks()
-
             if not tracks:
-                response = self._playlist_response(
-                    "Your playlist is empty."
-                )
+                response = "Your playlist is empty."
             else:
-                listing = "\n".join(
-                    f"{i}. {self._track_label(track)}"
-                    for i, track in enumerate(tracks, start=1)
+                listing = "<br>".join(
+                    f"{i}. {self._track_label(t)}" for i, t in enumerate(tracks, start=1)
                 )
-
-                count = len(tracks)
-                word = "song" if count == 1 else "songs"
-
-                response = self._playlist_response(
-                    f"Your playlist contains "
-                    f"{count} {word}:\n{listing}"
-                )
+                word = "song" if len(tracks) == 1 else "songs"
+                response = f"Your playlist contains {len(tracks)} {word}:<br>{listing}"
+            
 
         # Clear playlist.
-        elif lowered in (
-            "/clear",
-            "clear playlist",
-            "clear my playlist",
-            "empty playlist",
-        ):
+        elif lowered in _CLEAR:
             self._playlist.clear()
-
-            response = self._playlist_response(
-                "Playlist cleared."
-            )
+            response = "Your playlist has been cleared."
 
         # Add a verified track.
-        elif lowered.startswith("/add ") or lowered.startswith("add "):
-            query = re.sub(
-                r"^/?add\s+",
-                "",
-                command,
-                flags=re.IGNORECASE,
-            ).strip()
-
-            response = self._add_track(query)
+        elif m_add:
+            response = self._add_track(m_add.group("q"))
 
         # Remove a track.
-        elif lowered.startswith("/remove ") or lowered.startswith("remove "):
-            query = re.sub(
-                r"^/?remove\s+",
-                "",
-                command,
-                flags=re.IGNORECASE,
-            ).strip()
-
-            response = self._remove_track(query)
+        elif m_remove:
+            response = self._remove_track(m_remove.group("q"))
 
         # Information about the agent.
         elif lowered == "/info":
@@ -367,7 +284,7 @@ class MusicCRS(Agent):
             response = (
                 "I'm sorry, I don't understand that command."
             )
-
+        dialogue_acts.append(self._playlist_act())
         self._dialogue_connector.register_agent_utterance(
             AnnotatedUtterance(
                 response,
