@@ -6,11 +6,16 @@ import sqlite3
 from pathlib import Path
 
 from retrieval.data_loader import MusicCatalogLoader
+from musiccrs.track_database import norm
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE_PATH = ROOT / "data" / "tracks.db"
 
+def as_list(value):
+    if not value:
+        return []
+    return [value] if isinstance(value, str) else list(value)
 
 def main():
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -21,55 +26,46 @@ def main():
     print(f"Loaded {len(catalog.metadata_dict)} tracks.")
 
     with sqlite3.connect(DATABASE_PATH) as conn:
+        conn.execute("DROP TABLE IF EXISTS tracks")
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS tracks (
+            CREATE TABLE tracks (
                 track_id TEXT PRIMARY KEY,
                 track_name TEXT NOT NULL,
                 artist_name TEXT NOT NULL,
                 album_name TEXT,
-                popularity REAL DEFAULT 0
+                popularity REAL DEFAULT 0,
+                title_norm TEXT NOT NULL,
+                artist_norm TEXT NOT NULL
             )
         """)
 
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tracks_name
-            ON tracks(track_name COLLATE NOCASE)
+            CREATE INDEX idx_tracks_title_norm ON tracks(title_norm)
         """)
 
         rows = []
 
         for track_id, metadata in catalog.metadata_dict.items():
-            artists = metadata.get("artist_name") or []
-            albums = metadata.get("album_name") or []
+            artists = as_list(metadata.get("artist_name"))
+            albums = as_list(metadata.get("album_name"))
+            titles = as_list(metadata.get("track_name"))
+            title = titles[0] if titles else ""
 
-            if isinstance(artists, str):
-                artists = [artists]
-
-            if isinstance(albums, str):
-                albums = [albums]
-
-            
-            titles = metadata.get("track_name") or []
-
-            if isinstance(titles, str):
-              titles = [titles]
-
-            # Use the first title as the primary display name.
-            primary_title = titles[0] if titles else ""
 
             rows.append((
                 str(track_id),
-                primary_title,
+                title,
                 json.dumps(artists, ensure_ascii=False),
                 json.dumps(albums, ensure_ascii=False),
-                metadata.get("popularity") or 0,
+                metadata.get("popularity", 0),
+                norm(title),
+                norm(" ".join(artists)),
+
             ))
 
 
         conn.executemany("""
-            INSERT OR REPLACE INTO tracks
-                (track_id, track_name, artist_name, album_name, popularity)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?, ?)
         """, rows)
 
         count = conn.execute(
