@@ -4,6 +4,9 @@
 import json
 import sqlite3
 from pathlib import Path
+import re
+import unicodedata
+from contextlib import closing
 
 #from matplotlib.pyplot import title
 #from sympy import limit
@@ -12,6 +15,12 @@ from pathlib import Path
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "tracks.db"
 
 
+
+def norm(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text.casefold())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = re.sub(r"['’`]", "", text)
+    return re.sub(r"[\W_]+", " ", text).strip()
 class TrackDatabase:
     def __init__(self, db_path=DATABASE_PATH):
         self.db_path = Path(db_path)
@@ -38,8 +47,7 @@ class TrackDatabase:
         }
 
     def get_track(self, track_id):
-        """Retrieve a track by its unique database ID."""
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             row = conn.execute(
                 "SELECT * FROM tracks WHERE track_id = ?",
                 (track_id,),
@@ -47,41 +55,60 @@ class TrackDatabase:
 
         return self._format_track(row) if row else None
 
+    def get_tracks(self, track_ids):
+        if not track_ids:
+            return []
+        marks = ",".join("?" * len(track_ids))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM tracks WHERE track_id IN ({marks})",
+                track_ids,
+            ).fetchall()
+        by_id = {row["track_id"]: self._format_track(row) for row in rows}
+        return [by_id[t] for t in track_ids if t in by_id]
+
 
     def search_tracks(self, title, artist=None, limit=10):
         """Search by title and optionally artist, prioritizing exact matches."""
-        title = title.strip()
+        t = norm(title)
 
-        if not title:
+        if not t:
             return []
+        a = norm(artist) if artist else ""
 
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM tracks
-                WHERE track_name LIKE ? COLLATE NOCASE
-                ORDER BY
-                    CASE
-                        WHEN track_name = ? COLLATE NOCASE THEN 0
-                        ELSE 1
-                    END,
-                    popularity DESC
-                """,
-                (f"%{title}%", title),
+        with closing(self._connect()) as conn:
+            exact = conn.execute(
+                """SELECT * FROM tracks WHERE title_norm = ? AND artist_norm = ?
+                ORDER BY popularity DESC LIMIT ?""",
+                (t, f"%{a}%", limit),
+            ).fetchall()
+            partial = conn.execute(
+                """SELECT * FROM tracks WHERE title_norm LIKE ? AND title_norm != ?
+                  AND artist_norm LIKE ?
+                ORDER BY popularity DESC LIMIT ?""",
+                (f"%{t}%",t, f"%{a}%", limit),
             ).fetchall()
 
-        tracks = [self._format_track(row) for row in rows]
+        results = [{**self._format_track(row), "exact": True} for row in exact]
+        results += [{**self._format_track(row), "exact": False} for row in partial]
 
-        if artist:
-            artist_query = artist.casefold().strip()
-            tracks = [
-                track for track in tracks
-                if any(
-                    artist_query in name.casefold()
-                    for name in track["artist_name"]
-                )
-            ]
+        return results[:limit]
 
-        return tracks[:limit]
+    def find_tracks(self, text, limit=10):
+        text = text.strip()
+        hits = self.search_tracks(text, limit=limit)
+        if any(hit["exact"] for hit in hits):
+            return hits
+
+        for m in reversed(list(re.finditer(r"\s+by\s+", text, flags=re.I))):
+            found = self.search_tracks(text[: m.start()], text[m.end() :], limit=limit)
+            if found:
+                return found
+
+        if ":" in text:
+            artist, title = text.split(":", 1)
+            found = self.search_tracks(title, artist, limit)
+            if found:
+                return found
+        return hits    
 
