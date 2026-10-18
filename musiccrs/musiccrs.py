@@ -18,13 +18,23 @@ from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
 
 from track_database import TrackDatabase, norm
-
+from fuzzy import FuzzyTrackIndex
 
 load_dotenv()
 
 LLM_BASE_URL = "https://openwebui.ux.uis.no/api"
 LLM_MODEL = "gorina10.gemma-4-31b"
 LLM_API_KEY = os.getenv("MY_OLLAMA_API_KEY")
+
+FUZZY_ACCEPT = 0.9
+FUZZY_SUGGEST = 0.6
+_FUZZY_INDEX = None
+
+def get_fuzzy_index(db):
+    global _FUZZY_INDEX
+    if _FUZZY_INDEX is None:
+        _FUZZY_INDEX = FuzzyTrackIndex(db)
+    return _FUZZY_INDEX
 
 _INTENT_OPTIONS = Intent("OPTIONS")
 _INTENT_PLAYLIST = Intent("PLAYLIST_STATE")
@@ -99,6 +109,11 @@ class MusicCRS(Agent):
             ],
         )
 
+    def _fuzzy_guesses(self, query: str) -> list[tuple[dict, float]]:
+        found = get_fuzzy_index(self._db).search(query, k=5)
+        tracks = {t["track_id"]: t for t in self._db.get_tracks([i for i, _ in found])}
+        return [(tracks[i], sim) for i, sim in found if i in tracks]
+
     # --------------------------------------------------
     # Add track
     # --------------------------------------------------
@@ -115,24 +130,32 @@ class MusicCRS(Agent):
         track = self._db.get_track(query)
         others = 0
 
+        note = ""
         if track is None:
             matches = self._db.find_tracks(query, limit=10)
-            if not matches:
-                return f"I couldn't find '{html.escape(query)}' in the catalog."
-            
             exact = [m for m in matches if m["exact"]]
-            if not exact:
-                suggestions = ", ".join(
-                    self._track_label(m)
-                    for m in matches[:3]
-                )
 
-                return (
-                    f"No exact match for '{html.escape(query)}'. "
-                    f"Did you mean: {suggestions}?"
-                )
+            if exact:
+                track = exact[0]
+                others = len(exact) - 1
+            else:
+                guesses = self._fuzzy_guesses(query)
+                if guesses and guesses[0][1] >= FUZZY_ACCEPT:
+                    track = guesses[0][0]
+                    note = (
+                        f" (I read '{html.escape(query)}' as "
+                        f"'{self._track_label(track)}')"
+                    )
+                else:
+                    options = [t for t, sim in guesses[:3] if sim >= FUZZY_SUGGEST] or matches[:3]
+                    if not options:
+                        return f"I couldn't find '{html.escape(query)}' in the catalog."
 
-            track = exact[0]
+                    suggestions = ", ".join(self._track_label(t) for t in options)
+                    return (
+                        f"No exact match for '{html.escape(query)}'. "
+                        f"Did you mean: {suggestions}?"
+                    )
             others = len(exact) - 1
 
         
@@ -145,7 +168,7 @@ class MusicCRS(Agent):
 
         self._playlist.append(track_id)
         message = (
-            f"Added {self._track_label(track)} to your playlist."
+            f"Added {self._track_label(track)} to your playlist.{note}"
         )
         if others:
             noun = "track shares" if others == 1 else "tracks share"
@@ -338,5 +361,6 @@ class MusicCRS(Agent):
 
 
 if __name__ == "__main__":
+    get_fuzzy_index(TrackDatabase())
     platform = FlaskSocketPlatform(MusicCRS)
     platform.start()

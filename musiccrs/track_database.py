@@ -67,6 +67,11 @@ class TrackDatabase:
         by_id = {row["track_id"]: self._format_track(row) for row in rows}
         return [by_id[t] for t in track_ids if t in by_id]
 
+    def all_norms(self):
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT track_id, title_norm, artist_norm, popularity FROM tracks"
+            ).fetchall()
 
     def search_tracks(self, title, artist=None, limit=10):
         """Search by title and optionally artist, prioritizing exact matches."""
