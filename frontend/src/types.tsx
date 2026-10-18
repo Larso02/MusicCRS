@@ -12,10 +12,16 @@ export type ChatMessageAttachment = {
   };
 };
 
+export type DialogueAct = {
+  intent: string;
+  annotations: { slot: string; value: string }[];
+};
+
 export type ChatMessage = {
   attachments?: ChatMessageAttachment[];
   text?: string;
   intent?: string;
+  dialogue_acts?: DialogueAct[];
 };
 
 export type AgentMessage = {

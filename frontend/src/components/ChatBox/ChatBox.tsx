@@ -90,25 +90,21 @@ export default function ChatBox() {
 
   const handelMessage = useCallback(
     (message: ChatMessage) => {
-      if (!!message.text) {
-        let displayText = message.text;
-        if (displayText.startsWith("__PLAYLIST_STATE__")) {
-          try {
-            const state = JSON.parse(displayText.slice("__PLAYLIST_STATE__".length));
-            if (Array.isArray(state.tracks)) setPlaylist(state.tracks);
-            displayText = state.message || "Playlist updated.";
-          } catch (error) {
-            console.error("Invalid playlist state:", error);
-          }
+      const playlistAct = message.dialogue_acts?.find((act) => act.intent === "PLAYLIST_STATE");
+      if (playlistAct){
+        try {
+          setPlaylist(playlistAct.annotations.map((a) => JSON.parse(a.value)));
+        } catch (error) {
+          console.error("Invalid playlist state:", error);
         }
-        const image_url = message.attachments?.find(
-          (attachment) => attachment.type === "images"
-        )?.payload.images?.[0];
+      }
+      if (!!message.text) {
+        const image_url = message.attachments?.find((attachment) => attachment.type === "image")?.payload.images?.[0];
         updateMessages(
           <AgentChatMessage
             key={chatMessagesRef.current.length}
             feedback={config.useFeedback ? giveFeedback : null}
-            message={displayText}
+            message={message.text}
             image_url={image_url}
           />
         );
