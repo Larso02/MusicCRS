@@ -4,3 +4,4 @@ websocket-client
 colorama
 datasets
 bm25s
+pytest

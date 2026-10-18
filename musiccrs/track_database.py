@@ -78,7 +78,7 @@ class TrackDatabase:
 
         with closing(self._connect()) as conn:
             exact = conn.execute(
-                """SELECT * FROM tracks WHERE title_norm = ? AND artist_norm = ?
+                """SELECT * FROM tracks WHERE title_norm = ? AND artist_norm LIKE ?
                 ORDER BY popularity DESC LIMIT ?""",
                 (t, f"%{a}%", limit),
             ).fetchall()
