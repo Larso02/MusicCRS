@@ -74,6 +74,7 @@ def test_search_is_fast(index):
 def test_typo_with_artist_is_accepted_and_explained(agent, say):
     text, tracks = say(agent, "add yelow by coldplay")
     assert text.startswith("Added") and "I read" in text
+    assert "other" not in text          # no leftover "-1 other tracks share this title"
     assert [t["track_name"] for t in tracks] == ["Yellow"]
 
 

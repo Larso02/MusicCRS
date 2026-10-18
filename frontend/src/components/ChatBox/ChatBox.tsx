@@ -115,6 +115,33 @@ export default function ChatBox() {
 
   const handleButtons = useCallback(
     (message: ChatMessage) => {
+      const optionsAct = message.dialogue_acts?.find(
+        (act) => act.intent === "OPTIONS"
+      );
+      if (optionsAct && optionsAct.annotations.length > 0) {
+        setChatButtons(
+          optionsAct.annotations.map((annotation, index) => {
+            let title = annotation.value;
+            let payload = annotation.value;
+            try {
+              const option = JSON.parse(annotation.value);
+              title = option.title ?? title;
+              payload = option.payload ?? payload;
+            } catch (error) {
+              // plain-text option (e.g. the /options demo): text is title and payload
+            }
+            return (
+              <QuickReplyButton
+                key={index}
+                text={title}
+                message={payload}
+                click={handleQuickReply}
+              />
+            );
+          })
+        );
+        return;
+      }
       const buttons = message.attachments?.find(
         (attachment) => attachment.type === "buttons"
       )?.payload.buttons;

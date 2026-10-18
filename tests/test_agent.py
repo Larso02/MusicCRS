@@ -22,7 +22,7 @@ def test_add_view_remove_clear(agent, say):
     text, tracks = say(agent, "add Yellow by Coldplay")
     assert text.startswith("Added") and [t["track_name"] for t in tracks] == ["Yellow"]
 
-    text, tracks = say(agent, "Please add the song Iris to my playlist")
+    text, tracks = say(agent, "Please add the song Iris by The Goo Goo Dolls to my playlist")
     assert text.startswith("Added") and len(tracks) == 2
 
     text, tracks = say(agent, "show my playlist")

@@ -28,12 +28,11 @@ def agent_module():
 
     # musiccrs.py uses top-level imports (`from track_database import ...`)
     sys.modules.setdefault("track_database", track_database)
-    try:
-        import musiccrs.fuzzy as fuzzy
-
-        sys.modules.setdefault("fuzzy", fuzzy)
-    except ImportError:
-        pass                               # typo-tolerant search not added yet
+    for name in ("fuzzy", "capabilities"):        # sibling modules, if they exist yet
+        try:
+            sys.modules.setdefault(name, importlib.import_module(f"musiccrs.{name}"))
+        except ImportError:
+            pass
 
     spec = importlib.util.spec_from_file_location(
         "musiccrs_agent", ROOT / "musiccrs" / "musiccrs.py"
