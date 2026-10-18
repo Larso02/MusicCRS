@@ -14,5 +14,5 @@ COMMANDS = {
     "QUIT": "/quit",
     "REMOVE_TRACK": "/del [artist]: [track]",
     "RECOMMEND": "/recommend",
-    "SHOW_PLAYLIST": "/list",
+    "SHOW_PLAYLIST": "/playlist",
 }

@@ -15,6 +15,10 @@ Install dependencies by running:
 ```bash
 pip install -r requirements.txt
 ```
+Run
+```bash
+python -m scripts.import_tracks
+```
 
 Then, start the server by running:
 
