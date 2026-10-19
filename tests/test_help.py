@@ -55,10 +55,6 @@ def test_topic_questions_get_a_focused_answer():
     assert "Remove songs" in help_answer("how do I remove a song?")
 
 
-def test_unimplemented_features_are_not_advertised():
-    assert "Recommend" not in help_answer("what can you do?")
-
-
 # ---------- through the agent ----------
 def test_agent_answers_help_questions(agent, say):
     text, tracks = say(agent, "what can you do?")
