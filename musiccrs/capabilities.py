@@ -50,6 +50,21 @@ CAPABILITIES = {
             "<i>the second one</i>, or name the artist. Say <i>cancel</i> to skip."
         ),
     },
+        "ask": {
+        "available": True,
+        "keywords": {"ask", "question", "questions", "info", "information"},
+        "title": "Answer questions",
+        "summary": "answer questions about songs and artists",
+        "text": (
+            "About a song: <i>who sings Yellow?</i>, <i>what album is Yellow on?</i>, "
+            "<i>when was Yellow released?</i>, <i>how long is Yellow?</i>, "
+            "<i>how popular is Yellow?</i>, <i>what genre is Yellow?</i>. "
+            "About an artist: <i>what songs does Coldplay have?</i>, "
+            "<i>what albums does Coldplay have?</i>, <i>how many songs does Coldplay have?</i>, "
+            "<i>what is Coldplay's most popular song?</i>. "
+            "After you add or ask about a song, <i>who sings it?</i> works too."
+        ),
+    },
     # ---- not implemented yet: flip "available" to True when it works ----
     "recommend": {
         "available": False,
