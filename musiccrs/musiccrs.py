@@ -57,7 +57,7 @@ _CLEAR = ("/clear", "clear playlist", "clear my playlist", "empty playlist")
 _ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10}
 _CANCEL = {"cancel", "no", "none", "neither", "nevermind", "never mind", "skip", "no thanks", "no thank you", "nope", "not now", "not this time", "stop", "quit", "exit", "leave", "dismiss", "forget it", "forget about it", "forget that", "forget this", "forget it all", "forget everything", "forget all of this", "forget everything I said", "forget everything I just said", "forget everything I just told you", "forget everything I just told you about my playlist", "forget everything I just told you about my music preferences"}
 _FILLER = {"the", "one", "ones", "please", "i", "want", "pick", "choose", "select", "take", "song", "track", "by", "a", "with", "number", "option", "it", "that", "go", "for", "me", "my", "to", "in", "on", "of", "and", "or", "but", "so", "if", "then", "else", "when", "where", "how", "what", "which", "who", "whom", "whose", "why", "because", "since", "although", "though", "even though"}
-
+_QUIT = {"quit", "exit", "bye", "goodbye", "good bye", "stop"}
 
 class MusicCRS(Agent):
     def __init__(self, use_llm: bool = True):
@@ -404,13 +404,13 @@ class MusicCRS(Agent):
             ]
 
         # End conversation.
-        elif lowered == "/quit":
+        elif lowered == "/quit" or norm(command) in _QUIT:
             self.goodbye()
             return
 
         else:
             response = (
-                "I'm sorry, I don't understand that."
+                "I'm sorry, I don't understand that. "
                 "Say <i>help</i> to see what I can do."
             )
         dialogue_acts.append(self._playlist_act())

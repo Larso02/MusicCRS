@@ -3,6 +3,8 @@
 Run from the repo root: python -m pytest tests
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from musiccrs.track_database import DATABASE_PATH
@@ -79,3 +81,23 @@ def test_track_labels_are_html_escaped(agent):
 def test_words_like_address_are_not_commands(agent, say):
     text, tracks = say(agent, "address book")
     assert "don't understand" in text and tracks == []
+
+
+@pytest.mark.parametrize("message", ["/quit", "quit", "Bye!", "goodbye", "exit", "stop"])
+def test_ending_the_conversation(agent, message):
+    agent._dialogue_connector.sent.clear()
+    agent.receive_utterance(SimpleNamespace(text=message))
+    reply = agent._dialogue_connector.sent[-1]
+    assert "nice talking to you" in reply.text.lower()
+    assert any(str(a.intent) == "EXIT" for a in reply.dialogue_acts)
+
+
+def test_stop_while_a_question_is_open_only_cancels_it(agent, say):
+    say(agent, "add Yellow")
+    text, tracks = say(agent, "stop")
+    assert "won't add" in text and tracks == []        # the chat goes on, it did not end
+
+
+def test_unknown_reply_is_a_proper_sentence(agent, say):
+    text, _ = say(agent, "blah blah")
+    assert "understand that. Say" in text              # a space between the sentences
