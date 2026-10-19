@@ -28,11 +28,11 @@ def agent_module():
 
     # musiccrs.py uses top-level imports (`from track_database import ...`)
     sys.modules.setdefault("track_database", track_database)
-    for name in ("fuzzy", "capabilities"):        # sibling modules, if they exist yet
-        try:
-            sys.modules.setdefault(name, importlib.import_module(f"musiccrs.{name}"))
-        except ImportError:
-            pass
+    # every sibling module of musiccrs.py (fuzzy, capabilities, questions, ...), so new
+    # modules need no change here
+    for path in sorted((ROOT / "musiccrs").glob("*.py")):
+        if path.stem not in ("musiccrs", "track_database", "__init__"):
+            sys.modules.setdefault(path.stem, importlib.import_module(f"musiccrs.{path.stem}"))
 
     spec = importlib.util.spec_from_file_location(
         "musiccrs_agent", ROOT / "musiccrs" / "musiccrs.py"

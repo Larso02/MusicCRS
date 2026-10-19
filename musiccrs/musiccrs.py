@@ -5,6 +5,7 @@ import json
 import os
 import re
 
+from typing import Callable
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -17,9 +18,11 @@ from dialoguekit.participant.agent import Agent
 from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
 
-from track_database import TrackDatabase, norm
+from track_database import TrackDatabase, norm, clean_tags
 from fuzzy import FuzzyTrackIndex
 from capabilities import help_answer, is_help_request
+from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
+
 
 load_dotenv()
 
@@ -79,6 +82,9 @@ class MusicCRS(Agent):
         self._playlist: list[str] = []
         self._pending: list[dict] | None = None
         self._offer: list[dict] | None = None
+        self._pending_then: Callable[[dict, str], str] | None = None
+        self._pending_cancel = "Okay, I won't add anything."
+        self._last_track: dict | None = None
 
     def welcome(self) -> None:
         """Send the agent's welcome message."""
@@ -124,6 +130,7 @@ class MusicCRS(Agent):
         return [(tracks[i], sim) for i, sim in found if i in tracks]
 
     def _add_chosen(self, track:dict, note: str="") -> str:
+        self._last_track = track
         if track["track_id"] in self._playlist:
             return f"{self._track_label(track)} is already in your playlist."
         self._playlist.append(track["track_id"])
@@ -158,9 +165,11 @@ class MusicCRS(Agent):
 
         return sorted(tracks, key=score, reverse=True)
 
-    def _ask_which(self, propmt: str, tracks: list[dict]) -> str:
+    def _ask_which(self, propmt: str, tracks: list[dict], then: Callable[[dict, str], str] | None = None, cancel_text: str = "Okay, I won't add anything.") -> str:
         self._pending = tracks
         self._offer = tracks
+        self._pending_then = then or self._add_chosen
+        self._pending_cancel = cancel_text
         listing = "<br>".join(
             f"{i}. {self._track_label(t)}" for i, t in enumerate(tracks, start=1)
         )
@@ -202,11 +211,11 @@ class MusicCRS(Agent):
         return None, None
 
     def _handle_choice(self, command: str, options: list[dict], is_command: bool) -> str | None:
-
+        then = self._pending_then or self._add_chosen
         for t in options:
             if norm(command) == norm(self._plain_label(t)):
                 self._pending = None
-                return self._add_chosen(t)
+                return then(t, "")
         
         if is_command:
             self._pending = None
@@ -215,11 +224,11 @@ class MusicCRS(Agent):
         action, track = self._parse_choice(command, options)
         if action == "pick" and track is not None:
             self._pending = None
-            return self._add_chosen(track)
+            return then(track, "")
         
         if action == "cancel":
             self._pending = None
-            return "Okay, I won't add anything."
+            return self._pending_cancel
 
         self._offer = options
         return (
@@ -230,34 +239,24 @@ class MusicCRS(Agent):
     # Add track
     # --------------------------------------------------
 
-    def _add_track(self, query: str) -> str:
-        """Add a verified TalkPlay track to the playlist."""
-        query = query.strip()
-
-        if not query:
-            return "Please provide a track name."
-            
-
-        # First check whether the input is a track ID.
+    def _lookup(self, query: str, then: Callable[[dict, str], str], cancel_text: str = "Okay, I won't add anything.") -> str:
         track = self._db.get_track(query)
         if track is not None:
-            return self._add_chosen(track)
-
+            return then(track, "")
         matches = self._db.find_tracks(query, limit=10)
         exact = self._distinct_songs([m for m in matches if m["exact"]])
-
         if len(exact) == 1:
-            return self._add_chosen(exact[0])
+            return then(exact[0], "")
         if len(exact) > 1:
             return self._ask_which(
-                f"Several songs are called '{html.escape(query)}'. Which one do you mean?", self._rank_for_playlist(exact)[:5],
+                f"Several songs are called '{html.escape(query)}'. Which one do you mean?", self._rank_for_playlist(exact)[:5], then, cancel_text,
             )
 
         guesses = self._fuzzy_guesses(query)
         if guesses and guesses[0][1] >= FUZZY_ACCEPT:
             track = guesses[0][0]
             note = f" (I read '{html.escape(query)}' as '{self._track_label(track)}')"
-            return self._add_chosen(track, note=note)
+            return then(track, note)
 
         options = [t for t, sim in guesses[:3] if sim >= FUZZY_SUGGEST] or matches[:3]
         options = self._distinct_songs(options)
@@ -265,8 +264,14 @@ class MusicCRS(Agent):
             return f"I couldn't find '{html.escape(query)}' in the catalog."
 
         return self._ask_which(
-            f"I couldn't find an exact match for '{html.escape(query)}'. Did you mean one of these?", options
+            f"I couldn't find an exact match for '{html.escape(query)}'. Did you mean one of these?", options, then, cancel_text
         )
+
+    def _add_track(self, query: str) -> str:
+        query = query.strip()
+        if not query:
+            return "Please provide a track name."
+        return self._lookup(query, self._add_chosen)
 
     # --------------------------------------------------
     # Remove track
@@ -323,6 +328,147 @@ class MusicCRS(Agent):
             f"Removed {self._track_label(track)}."
         )
 
+    @staticmethod
+    def _plural(n: int, word: str) -> str:
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    def _answer_question(self, q: Question) -> str:
+        subject = q.subject
+
+        if norm(subject) in IT_WORDS:
+            if q.kind in ARTIST_KINDS:
+                return "Please name the artist, for example: <i>what songs does Coldplay have?</i>"
+            if self._last_track is None:
+                return "Which song do you mean? For example: <i>who sings Yellow?</i>"
+
+            return self._answer_track(q.kind, self._last_track)   
+
+        if q.kind in ARTIST_KINDS:
+            return self._artist_question(q.kind, subject)
+
+        if q.kind in ("tags", "about"):
+            artists = self._db.find_artists(subject, limit=1)
+            if artists and artists[0]["similarity"] == 1.0:
+                return self._answer_artist(q.kind, artists[0])
+
+        if q.kind == "track_artist":
+            songs = self._distinct_songs([m for m in self._db.find_tracks(subject, limit=10) if m["exact"]])
+            if len(songs) > 1:
+                listing = "<br>".join(
+                    self._track_label(t) for t in self._rank_for_playlist(songs)[:5]
+                )
+                return f"Several songs are called '{html.escape(subject)}':<br>{listing}"
+        return self._lookup(subject, lambda track, note: self._answer_track(q.kind, track) + note, cancel_text="Okay, never mind.")
+
+    def _artist_question(self, kind: str, subject: str) -> str:
+        found = self._db.find_artists(subject, limit=3)
+        if not found:
+            return f"I couldn't find an artist called '{html.escape(subject)}'."
+        best = found[0]
+        if best["similarity"] < 0.85:
+            names = ", ".join(f"<b>{html.escape(a['name'])}</b>" for a in found)
+            return ( 
+                f"I couldn't find an artist called '{html.escape(subject)}'. Did you mean {names}?"
+            )
+        note = ""
+        if best ["similarity"] < 1.0:
+            note = f" (I read '{html.escape(subject)}' as '{html.escape(best['name'])}')"
+        return self._answer_artist(kind, best) + note
+
+    
+    def _answer_track(self, kind: str, track: dict) -> str:
+        self._last_track = track
+        d = self._db.get_details(track["track_id"]) or track
+        title = f"<b>{html.escape(d['track_name'])}</b>"
+        by = html.escape(", ".join(d["artist_name"]))
+        date = d.get("release_date")
+        ms = d.get("duration")
+        pop = d.get("popularity") or 0
+        album = html.escape(", ".join(d["album_name"]))
+        length = f"{ms // 60000}:{ms // 1000 % 60:02d}" if ms else None
+
+        if kind == "track_artist":
+            return f"{title} is by <b>{by}</b>."
+        if kind == "track_album":
+            albums = [html.escape(a) for a in d["album_name"]]
+            if not albums:
+                return f"I don't have album information for {title} by {by}."
+            if len(albums) == 1:
+                return f"{title} by {by} is on the album <b>{albums[0]}</b>."
+            names = " and ".join(f"<b>{a}</b>" for a in albums[:2])
+            more = f" (and {len(albums) - 2} more)" if len(albums) > 2 else ""
+            return f"{title} by {by} appears on the albums {names}{more}."
+        if kind == "track_year":
+            if not date:
+                return f"I don't have a release date for {title} by {by}."
+            return f"{title} by {by} was released in <b>{date[:4]}</b> ({date})."
+        if kind == "track_length":
+            if not length:
+                return f"I don't have the length of {title} by {by}."
+            return f"{title} by {by} is <b>{length}</b> long."
+        if kind == "track_popularity":
+            if not pop:
+                return f"I don't have a popularity score for {title} by {by}."
+            pct = min(99, int(self._db.popularity_percentile(pop)))
+            return (
+                f"{title} by {by} has a popularity score of <b>{pop:.0f}/100</b>, "
+                f"higher than {pct}% of the songs in my catalog."
+            )
+        if kind == "tags":
+            tags = clean_tags(d.get("tags") or [])
+            if not tags:
+                return f"I don't have tags for {title} by {by}."
+            return f"{title} by {by} is tagged: {html.escape(', '.join(tags))}."
+
+        parts = [f"{title} is by <b>{by}</b>"]                # "about"
+        if d["album_name"]:
+            parts.append(f"on the album {html.escape(d['album_name'][0])}")
+        if date:
+            parts.append(f"released in {date[:4]}")
+        if length:
+            parts.append(f"{length} long")
+        if pop:
+            parts.append(f"popularity {pop:.0f}/100")
+        return ", ".join(parts) + "."
+
+    def _answer_artist(self, kind: str, artist: dict) -> str:
+        name = f"<b>{html.escape(artist['name'])}</b>"
+        n = artist["tracks"]
+        songs = self._plural(n, "song")
+
+        if kind == "artist_count":
+            return f"I have {songs} by {name}."
+        if kind == "artist_songs":
+            top = self._db.artist_tracks(artist["key"], limit=5)
+            listing = "<br>".join(
+                f"{i}. {html.escape(t['track_name'])}" for i, t in enumerate(top, start=1)
+            )
+            lead = "The most popular" if n > len(top) else "They are"
+            return f"I have {songs} by {name}. {lead}:<br>{listing}"
+        if kind == "artist_albums":
+            albums = self._db.artist_albums(artist["key"])
+            if not albums:
+                return f"I don't have album information for {name}."
+            return f"Albums by {name} in my catalog: {html.escape(', '.join(albums))}."
+        if kind == "artist_top":
+            top = self._db.artist_tracks(artist["key"], limit=1)
+            pop = f" (popularity {top[0]['popularity']:.0f}/100)" if top and top[0]["popularity"] else ""
+            return f"The most popular song by {name} is <b>{html.escape(top[0]['track_name'])}</b>{pop}."
+        if kind == "tags":
+            tags = self._db.artist_tags(artist["key"])
+            if not tags:
+                return f"I don't have style information for {name}."
+            return f"{name} is mostly tagged: {html.escape(', '.join(tags))}."
+
+        top = self._db.artist_tracks(artist["key"], limit=3)   # "about"
+        text = f"{name}: {songs} in my catalog"
+        if top:
+            text += ". Most popular: " + html.escape(", ".join(t["track_name"] for t in top))
+        tags = self._db.artist_tags(artist["key"], k=4)
+        if tags:
+            text += ". Known for: " + html.escape(", ".join(tags))
+        return text + "."
+
     # --------------------------------------------------
     # Dialogue handling
     # --------------------------------------------------
@@ -334,12 +480,13 @@ class MusicCRS(Agent):
         command = utterance.text.strip()
         lowered = command.lower()
         m_add, m_remove = _ADD_RE.match(command), _REMOVE_RE.match(command)
+        question = parse_question(command)
 
         choice = None
         if self._pending:
             is_command = bool(
                 m_add or m_remove or lowered in _VIEW or lowered in _CLEAR or lowered.startswith("/") or is_help_request(command)
-
+                or question is not None
             )
             choice = self._handle_choice(command, self._pending, is_command)
         if choice is not None:
@@ -373,6 +520,9 @@ class MusicCRS(Agent):
 
         elif is_help_request(command):
             response = help_answer(command)
+
+        elif question is not None:
+            response = self._answer_question(question)
 
         # Information about the agent.
         elif lowered == "/info":
