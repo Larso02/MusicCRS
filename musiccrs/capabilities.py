@@ -42,15 +42,17 @@ CAPABILITIES = {
     },
     "choose": {
         "available": True,
-        "keywords": {"choose", "pick", "select", "ambiguous", "options", "several"},
+        "keywords": {"choose", "pick", "select", "ambiguous", "options", "several", "multiple", "many"},
         "title": "Choose between songs",
         "summary": "pick the right song when several match",
         "text": (
             "When I ask which song you mean, click a button, type its number, say "
-            "<i>the second one</i>, or name the artist. Say <i>cancel</i> to skip."
+            "<i>the second one</i>, or name the artist. When I suggest songs to add you can "
+            "take several at once: <i>1 and 3</i>, <i>the first two</i>, <i>2-4</i>, <i>all</i> "
+            "or <i>all except the second</i>. Say <i>cancel</i> to skip."
         ),
     },
-        "ask": {
+    "ask": {
         "available": True,
         "keywords": {"ask", "question", "questions", "info", "information"},
         "title": "Answer questions",
@@ -65,9 +67,18 @@ CAPABILITIES = {
             "After you add or ask about a song, <i>who sings it?</i> works too."
         ),
     },
-    # ---- not implemented yet: flip "available" to True when it works ----
+    "generate": {
+        "available": True,
+        "keywords": {"generate", "create", "build", "make", "description"},
+        "title": "Generate a playlist",
+        "summary": "build a whole playlist from a description",
+        "text": (
+            "Say <i>make me a playlist for the gym</i> or <i>/generate sad love songs</i> and I "
+            "build a playlist of the right length. It replaces your current playlist, so I ask first."
+        ),
+    },
     "recommend": {
-        "available": False,
+        "available": True,
         "keywords": {"recommend", "suggest", "recommendation", "recommendations"},
         "title": "Recommend songs",
         "summary": "suggest 3-5 songs that fit your playlist",
