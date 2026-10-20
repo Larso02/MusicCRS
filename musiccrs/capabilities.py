@@ -65,9 +65,8 @@ CAPABILITIES = {
             "After you add or ask about a song, <i>who sings it?</i> works too."
         ),
     },
-    # ---- not implemented yet: flip "available" to True when it works ----
-    "recommend": {
-        "available": False,
+        "recommend": {
+        "available": True,
         "keywords": {"recommend", "suggest", "recommendation", "recommendations"},
         "title": "Recommend songs",
         "summary": "suggest 3-5 songs that fit your playlist",

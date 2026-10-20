@@ -22,7 +22,7 @@ from track_database import TrackDatabase, norm, clean_tags
 from fuzzy import FuzzyTrackIndex
 from capabilities import help_answer, is_help_request
 from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
-
+from recommender import Recommender
 
 load_dotenv()
 
@@ -40,6 +40,15 @@ def get_fuzzy_index(db):
         _FUZZY_INDEX = FuzzyTrackIndex(db)
     return _FUZZY_INDEX
 
+
+_RECOMMENDER = None
+
+def get_recommender(db):
+    global _RECOMMENDER
+    if _RECOMMENDER is None:
+        _RECOMMENDER = Recommender(db.db_path)
+    return _RECOMMENDER
+
 _INTENT_OPTIONS = Intent("OPTIONS")
 _INTENT_PLAYLIST = Intent("PLAYLIST_STATE")
 _ADD_RE = re.compile(
@@ -51,6 +60,20 @@ _REMOVE_RE = re.compile(
     r"^(?:/remove\s+|/del\s+|(?:please\s+)?(?:remove|delete|drop|take out)\s+"
     r"(?:the\s+(?:song|track)\s+)?)"
     r"(?P<q>.+?)(?:\s+from\s+(?:my|the)\s+(?:play ?list|queue))?\s*$",
+    re.I,
+)
+
+_RECOMMEND_RE = re.compile(
+    r"^(?:/recommend"
+    r"|(?:(?:please|ok(?:ay)?)[, ]+)?(?:(?:can|could|would) you (?:please )?)?"
+    r"(?:recommend|suggest)(?: me| us)?"
+    r"(?: (?:something|some|a few|a couple of|a|more|another|new|other|3|4|5|three|four|five))*"
+    r"(?: (?:songs?|tracks?|music|ones?|things?))?"
+    r"(?: (?:for me|to add|please|like (?:these|this|them)|based on (?:my|the) playlist"
+    r"|for (?:my|the) playlist|that fit (?:my|the) playlist))*"
+    r"|what (?:should|could|can) i (?:add|listen to|play)(?: next)?"
+    r"|(?:give me |show me )?(?:some |more )*(?:recommendations|suggestions)"
+    r"|more (?:songs )?like (?:this|these|them))\s*[?!.]*$",
     re.I,
 )
 
@@ -85,6 +108,7 @@ class MusicCRS(Agent):
         self._pending_then: Callable[[dict, str], str] | None = None
         self._pending_cancel = "Okay, I won't add anything."
         self._last_track: dict | None = None
+        self._recommended: list[str] = []
 
     def welcome(self) -> None:
         """Send the agent's welcome message."""
@@ -165,13 +189,13 @@ class MusicCRS(Agent):
 
         return sorted(tracks, key=score, reverse=True)
 
-    def _ask_which(self, propmt: str, tracks: list[dict], then: Callable[[dict, str], str] | None = None, cancel_text: str = "Okay, I won't add anything.") -> str:
+    def _ask_which(self, propmt: str, tracks: list[dict], then: Callable[[dict, str], str] | None = None, cancel_text: str = "Okay, I won't add anything.", notes: list[str] | None = None) -> str:
         self._pending = tracks
         self._offer = tracks
         self._pending_then = then or self._add_chosen
         self._pending_cancel = cancel_text
         listing = "<br>".join(
-            f"{i}. {self._track_label(t)}" for i, t in enumerate(tracks, start=1)
+            f"{i}. {self._track_label(t)}" + (f" <i> ({html.escape(notes[i-1])}) </i>" if notes else "") for i, t in enumerate(tracks, start=1)
         )
         return (
             f"{propmt}<br>"
@@ -469,8 +493,22 @@ class MusicCRS(Agent):
             text += ". Known for: " + html.escape(", ".join(tags))
         return text + "."
 
-    # --------------------------------------------------
-    # Dialogue handling
+
+    def _recommend(self) -> str:
+        if not self._playlist:
+            return(
+                "Your playlist is empty, so I have nothing to base a recommendation on. "
+                "Add a few songs first, for example: <i>add Yellow by Coldplay</i>."
+            )
+        picks = get_recommender(self._db).recommend(self._playlist, k=5, skip=self._recommended)
+        tracks = {t["track_id"]: t for t in self._db.get_tracks([i for i, _ in picks])}
+        picks = [(i, why) for i, why in picks if i in tracks]
+        if not picks:
+            return "I couldn't find more songs that fit your playlist."
+        self._recommended.extend(i for i, _ in picks)
+        return self._ask_which(
+            "Based on your playlist, you might like these:", [tracks[i] for i, _ in picks], cancel_text="Okay, I won't add any of them. Say <i>recommend more</i> for other songs", notes=[why for _, why in picks]
+        )
     # --------------------------------------------------
 
     def receive_utterance(self, utterance: Utterance) -> None:
@@ -486,7 +524,7 @@ class MusicCRS(Agent):
         if self._pending:
             is_command = bool(
                 m_add or m_remove or lowered in _VIEW or lowered in _CLEAR or lowered.startswith("/") or is_help_request(command)
-                or question is not None
+                or question is not None or _RECOMMEND_RE.match(command)
             )
             choice = self._handle_choice(command, self._pending, is_command)
         if choice is not None:
@@ -508,6 +546,7 @@ class MusicCRS(Agent):
         # Clear playlist.
         elif lowered in _CLEAR:
             self._playlist.clear()
+            self._recommended.clear()
             response = "Your playlist has been cleared."
 
         # Add a verified track.
@@ -520,6 +559,9 @@ class MusicCRS(Agent):
 
         elif is_help_request(command):
             response = help_answer(command)
+
+        elif _RECOMMEND_RE.match(command):
+            response = self._recommend()
 
         elif question is not None:
             response = self._answer_question(question)
@@ -620,5 +662,6 @@ class MusicCRS(Agent):
 
 if __name__ == "__main__":
     get_fuzzy_index(TrackDatabase())
+    get_recommender(TrackDatabase())
     platform = FlaskSocketPlatform(MusicCRS)
     platform.start()
