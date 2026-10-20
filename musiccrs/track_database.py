@@ -7,6 +7,9 @@ from pathlib import Path
 import re
 import unicodedata
 from contextlib import closing
+import difflib
+from collections import Counter
+from functools import lru_cache
 
 #from matplotlib.pyplot import title
 #from sympy import limit
@@ -14,7 +17,28 @@ from contextlib import closing
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "tracks.db"
 
+TAG_STOPLIST = {"favorites", "favorite", "favourites", "favourite", "my favorites", "awesome",
+                "seen live", "good", "great", "amazing", "cool", "best", "check out"}
 
+def artist_key(artist: str) -> str:
+    return re.sub(r"^the ", "", norm(artist))
+
+def clean_tags(tags, k: int = 6) -> list[str]:
+    seen, out = set(), []
+    for tag in tags:
+        low = tag.strip().lower()
+        if low and low not in seen and low not in TAG_STOPLIST:
+            seen.add(low)
+            out.append(tag.strip())
+            if len(out) == k:
+                break
+    return out
+
+@lru_cache(maxsize=4)
+def _artist_table(db_path: str) -> dict:
+    with closing(sqlite3.connect(db_path)) as conn:
+        rows = conn.execute("SELECT artist_key, MIN(artist_name), COUNT(*) FROM track_artists GROUP BY artist_key").fetchall()
+    return {key: (name, n) for key, name, n in rows}
 
 def norm(text: str) -> str:
     text = unicodedata.normalize("NFKD", text.casefold())
@@ -117,3 +141,71 @@ class TrackDatabase:
                 return found
         return hits    
 
+    def get_details(self, track_id):
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM tracks WHERE track_id = ?", (track_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            track = self._format_track(row)
+            track["release_date"] = row["release_date"]
+            track["duration"] = row["duration"]
+            track["tags"] = json.loads(row["tags"] or "[]")
+        return track
+
+    def popularity_percentile(self, popularity):
+        with closing(self._connect()) as conn:
+            below, total = conn.execute(
+                "SELECT SUM(popularity < ?), COUNT(*) FROM tracks WHERE popularity > 0" , (popularity,)
+            ).fetchone()
+        return 100.0* (below or 0) / total if total else 0.0
+
+    def find_artists(self, text, limit=3):
+        table = _artist_table(str(self.db_path))
+        key = artist_key(text)
+        if key in table:
+            keys = [key]
+        else:
+            keys = difflib.get_close_matches(key, table, n=limit, cutoff=0.75)
+        return [
+            {
+                "key": k,
+                "name": table[k][0],
+                "tracks": table[k][1],
+                "similarity": difflib.SequenceMatcher(None, key, k).ratio(),
+            }
+            for k in keys
+        ]
+
+    def artist_tracks(self, key, limit=None):
+        sql = (
+            "SELECT t.* FROM tracks t JOIN track_artists a ON a.track_id = t.track_id"
+            " WHERE a.artist_key = ? ORDER BY t.popularity DESC"
+        )
+        params = [key]
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with closing(self._connect()) as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._format_track(row) for row in rows]
+
+    def artist_albums(self, key, limit=8):
+        best = {}
+        for t in self.artist_tracks(key):
+            for album in t["album_name"][:1]:
+                best[album] = max(best.get(album, 0), t["popularity"])
+        return sorted(best, key=lambda album: best[album], reverse=True)[:limit]
+    
+
+    def artist_tags(self, key, k=6):
+        sql = (
+            "SELECT t.tags FROM tracks t JOIN track_artists a ON a.track_id = t.track_id"
+            " WHERE a.artist_key = ?"
+        )
+        counts = Counter()
+        with closing(self._connect()) as conn:
+            for (tags,) in conn.execute(sql, (key,)):
+                counts.update({t.strip().lower() for t in json.loads(tags or "[]")} - TAG_STOPLIST - {""})
+        return [tag for tag, _ in counts.most_common(k)]
