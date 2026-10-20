@@ -5,7 +5,6 @@ import json
 import os
 import re
 
-from click import command
 from typing import Callable
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -731,5 +730,6 @@ class MusicCRS(Agent):
 if __name__ == "__main__":
     get_fuzzy_index(TrackDatabase())
     get_recommender(TrackDatabase())
+    
     platform = FlaskSocketPlatform(MusicCRS)
     platform.start()

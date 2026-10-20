@@ -17,7 +17,7 @@ MAX_KNOWN_ARTIST = 2
 class Recommender:
     def __init__(self, db_path):
         with closing(sqlite3.connect(db_path)) as conn:
-            rows = conn.execute("SELECT track_id, artist_name, album_name, popularity, release_date, tags FROM tracks").fetchall()
+            rows = conn.execute("SELECT track_id, track_name, artist_name, album_name, popularity, release_date, tags FROM tracks").fetchall()
             self.ids = [r[0] for r in rows]
             self.index = {t: i for i, t in enumerate(self.ids)}
             self.pop = np.array([r[4] or 0 for r in rows], dtype=np.float32)/100.0
@@ -58,7 +58,7 @@ class Recommender:
         centroid = np.asarray(self.tag_matrix[h].mean(axis=0)).ravel()
         norm = np.linalg.norm(centroid)
         if norm > 0:
-            s = s + w["tag"] * (self.tag_matrix @ centroid / norm)
+            s = s + w["tag"] * (self.tag_matrix @ (centroid / norm))
 
         years = self.year[h][self.year[h] > 0]
         if len(years):
