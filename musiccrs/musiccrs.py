@@ -21,7 +21,7 @@ from dialoguekit.platforms import FlaskSocketPlatform
 from track_database import TrackDatabase, norm, clean_tags
 from fuzzy import FuzzyTrackIndex
 from capabilities import help_answer, is_help_request
-from playlist_generator import PlaylistGenerator
+from playlist_generator import PlaylistGenerator, warm_up as warm_up_generator
 from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
 from recommender import Recommender
 
@@ -78,6 +78,20 @@ _RECOMMEND_RE = re.compile(
     re.I,
 )
 
+_GENERATE_RE = re.compile(
+    r"^(?:/generate\b"
+    r"|(?:(?:please|ok(?:ay)?)[, ]+)?(?:(?:can|could|would) you (?:please )?)?"
+    r"(?:make|create|generate|build|put together|give)\s+(?:me\s+|us\s+)?(?:a|an|the|some)?\s*(?:new\s+)?"
+    r"play ?list\b(?:\s+(?:for|of|with|about|that|to|full of|containing))?)"
+    r"\s*(?P<d>.*?)\s*[.!?]*$",
+    re.I,
+)
+_YES = {"yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "do it", "go ahead", "continue",
+        "please do", "yes please", "replace it", "replace", "confirm"}
+_NO = {"no", "n", "nope", "cancel", "nevermind", "never mind", "keep it", "dont", "no thanks",
+       "no thank you", "keep my playlist", "keep the playlist", "stop"}
+
+
 _VIEW = ("/playlist", "/list", "show playlist", "show my playlist", "view playlist", "what's in my playlist", "what is in my playlist")
 _CLEAR = ("/clear", "clear playlist", "clear my playlist", "empty playlist")
 
@@ -90,6 +104,7 @@ class MusicCRS(Agent):
     def __init__(self, use_llm: bool = True):
         """Initialize MusicCRS agent."""
         self._playlist_generator = None
+        self._confirm_generate: str | None = None
         super().__init__(id="MusicCRS")
 
         if use_llm:
@@ -499,7 +514,7 @@ class MusicCRS(Agent):
     # R8: playlist generation
     # --------------------------------------------------
 
-    def _generate_playlist(self, description: str) -> str:
+    def _generate_playlist(self, description: str, confirmed: bool = False) -> str:
         """Generate and replace the playlist from a description."""
 
         description = description.strip()
@@ -512,6 +527,13 @@ class MusicCRS(Agent):
 
         if self._llm is None:
             return "Playlist generation requires an LLM."
+
+        if self._playlist and not confirmed:
+            self._confirm_generate = description
+            return (
+                f"A new playlist for '{html.escape(description)}' <b>replaces your current playlist<b/> of {len(self._playlist)} songs. "
+                "Say <b>yes<b/> to continue or <b>no</b> to keep it."
+            )
 
         try:
             if self._playlist_generator is None:
@@ -531,6 +553,7 @@ class MusicCRS(Agent):
 
             # Replace the existing playlist only after successful generation.
             self._playlist = track_ids
+            self._recommended.clear()
 
             # Clear any outstanding song-selection state.
             self._pending = None
@@ -555,6 +578,16 @@ class MusicCRS(Agent):
                 "Please try again."
             )
 
+    def _handle_confirmation(self, command: str) -> str | None:
+        if self._confirm_generate is None:
+            return None
+        description, self._confirm_generate = self._confirm_generate, None
+        answer = norm(command)
+        if answer in _YES:
+            return self._generate_playlist(description, confirmed=True)
+        if answer in _NO:
+            return "Okay, I'll keep your current playlist."
+        return None
 
     def _recommend(self) -> str:
         if not self._playlist:
@@ -581,15 +614,20 @@ class MusicCRS(Agent):
         lowered = command.lower()
         m_add, m_remove = _ADD_RE.match(command), _REMOVE_RE.match(command)
         question = parse_question(command)
+        m_generate = _GENERATE_RE.match(command)
+        confirmation = self._handle_confirmation(command)
 
         choice = None
-        if self._pending:
+        if self._pending and confirmation is None:
             is_command = bool(
                 m_add or m_remove or lowered in _VIEW or lowered in _CLEAR or lowered.startswith("/") or is_help_request(command)
-                or question is not None or _RECOMMEND_RE.match(command)
+                or question is not None or _RECOMMEND_RE.match(command) or _GENERATE_RE.match(command)
             )
             choice = self._handle_choice(command, self._pending, is_command)
-        if choice is not None:
+        if confirmation is not None:
+            response = confirmation
+        
+        elif choice is not None:
             response = choice
 
         # View playlist.
@@ -612,9 +650,8 @@ class MusicCRS(Agent):
             response = "Your playlist has been cleared."
 
         # R8: Generate a complete playlist.
-        elif lowered == "/generate" or lowered.startswith("/generate "):
-            description = command[len("/generate"):].strip()
-            response = self._generate_playlist(description)
+        elif m_generate:
+            response = self._generate_playlist(m_generate.group("d"))
 
         # Add a verified track.
         elif m_add:
@@ -730,6 +767,6 @@ class MusicCRS(Agent):
 if __name__ == "__main__":
     get_fuzzy_index(TrackDatabase())
     get_recommender(TrackDatabase())
-    
+    warm_up_generator()
     platform = FlaskSocketPlatform(MusicCRS)
     platform.start()

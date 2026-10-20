@@ -50,7 +50,7 @@ CAPABILITIES = {
             "<i>the second one</i>, or name the artist. Say <i>cancel</i> to skip."
         ),
     },
-        "ask": {
+    "ask": {
         "available": True,
         "keywords": {"ask", "question", "questions", "info", "information"},
         "title": "Answer questions",
@@ -65,7 +65,17 @@ CAPABILITIES = {
             "After you add or ask about a song, <i>who sings it?</i> works too."
         ),
     },
-        "recommend": {
+    "generate": {
+        "available": True,
+        "keywords": {"generate", "create", "build", "make", "description"},
+        "title": "Generate a playlist",
+        "summary": "build a whole playlist from a description",
+        "text": (
+            "Say <i>make me a playlist for the gym</i> or <i>/generate sad love songs</i> and I "
+            "build a playlist of the right length. It replaces your current playlist, so I ask first."
+        ),
+    },
+    "recommend": {
         "available": True,
         "keywords": {"recommend", "suggest", "recommendation", "recommendations"},
         "title": "Recommend songs",

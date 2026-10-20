@@ -5,3 +5,7 @@ colorama
 datasets
 bm25s
 pytest
+sentence-transformers
+torch
+numpy
+scipy

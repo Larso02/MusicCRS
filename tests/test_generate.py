@@ -160,6 +160,13 @@ def test_unknown_track_ids_from_the_generator_are_dropped(gen_agent, say):
     assert "couldn't find suitable songs" in text and tracks == []
 
 
+def test_help_lists_playlist_generation(agent, say):
+    text, _ = say(agent, "what can you do?")
+    assert "Generate a playlist" in text
+    text, _ = say(agent, "how do I create a playlist?")
+    assert "make me a playlist" in text
+
+
 # ---------- retrieval pieces ----------
 @pytest.fixture()
 def pg():
