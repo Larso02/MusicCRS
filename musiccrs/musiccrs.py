@@ -5,6 +5,7 @@ import json
 import os
 import re
 
+from click import command
 from typing import Callable
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -21,6 +22,7 @@ from dialoguekit.platforms import FlaskSocketPlatform
 from track_database import TrackDatabase, norm, clean_tags
 from fuzzy import FuzzyTrackIndex
 from capabilities import help_answer, is_help_request
+from playlist_generator import PlaylistGenerator
 from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
 
 
@@ -65,6 +67,7 @@ _QUIT = {"quit", "exit", "bye", "goodbye", "good bye", "stop"}
 class MusicCRS(Agent):
     def __init__(self, use_llm: bool = True):
         """Initialize MusicCRS agent."""
+        self._playlist_generator = None
         super().__init__(id="MusicCRS")
 
         if use_llm:
@@ -470,6 +473,66 @@ class MusicCRS(Agent):
         return text + "."
 
     # --------------------------------------------------
+    # R8: playlist generation
+    # --------------------------------------------------
+
+    def _generate_playlist(self, description: str) -> str:
+        """Generate and replace the playlist from a description."""
+
+        description = description.strip()
+
+        if not description:
+            return (
+                "Please describe the playlist you want. "
+                "For example: /generate energetic music for the gym"
+            )
+
+        if self._llm is None:
+            return "Playlist generation requires an LLM."
+
+        try:
+            if self._playlist_generator is None:
+                self._playlist_generator = PlaylistGenerator(self._llm)
+
+            result = self._playlist_generator.generate(description)
+
+            # Only accept track IDs that exist in our SQLite database.
+            verified = self._db.get_tracks(result["track_ids"])
+            track_ids = list(dict.fromkeys(t["track_id"] for t in verified))
+
+            if not track_ids:
+                return (
+                    "I couldn't find suitable songs for that description. "
+                    "Please try describing a different mood or genre."
+                )
+
+            # Replace the existing playlist only after successful generation.
+            self._playlist = track_ids
+
+            # Clear any outstanding song-selection state.
+            self._pending = None
+            self._offer = None
+
+            count = len(track_ids)
+            minutes = result["actual_minutes"]
+
+            return (
+                f"Created a new playlist based on "
+                f"'{html.escape(description)}'!<br>"
+                f"<b>{count} songs</b>, approximately "
+                f"<b>{minutes:.0f} minutes</b> long.<br>"
+                "Your playlist has been updated."
+            )
+
+        except Exception:
+            import logging
+            logging.exception("R8 playlist generation failed")
+            return (
+                "Sorry, I couldn't generate your playlist right now. "
+                "Please try again."
+            )
+
+    # --------------------------------------------------
     # Dialogue handling
     # --------------------------------------------------
 
@@ -509,6 +572,11 @@ class MusicCRS(Agent):
         elif lowered in _CLEAR:
             self._playlist.clear()
             response = "Your playlist has been cleared."
+
+        # R8: Generate a complete playlist.
+        elif lowered == "/generate" or lowered.startswith("/generate "):
+            description = command[len("/generate"):].strip()
+            response = self._generate_playlist(description)
 
         # Add a verified track.
         elif m_add:
