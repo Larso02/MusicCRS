@@ -531,8 +531,8 @@ class MusicCRS(Agent):
         if self._playlist and not confirmed:
             self._confirm_generate = description
             return (
-                f"A new playlist for '{html.escape(description)}' <b>replaces your current playlist<b/> of {len(self._playlist)} songs. "
-                "Say <b>yes<b/> to continue or <b>no</b> to keep it."
+                f"A new playlist for '{html.escape(description)}' <b>replaces your current playlist</b> {len(self._playlist)} song. "
+                "Say <b>yes</b> to continue or <b>no</b> to keep it."
             )
 
         try:

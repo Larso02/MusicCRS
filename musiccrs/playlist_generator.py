@@ -154,6 +154,12 @@ Rules:
 - Gym sessions: approximately 45-75 minutes.
 - Studying: approximately 60-120 minutes.
 - Road trips: approximately 90-180 minutes.
+- Describe the MUSIC in the search query: genres, moods, tempo, instruments, and the themes
+  the user names (for example sad, love, rain, summer). Do NOT put the place or activity itself
+  in the query (gym, workout, studying, party, road trip, cooking, sleep): song and artist names
+  containing those words are misleading. Translate it into music words instead, e.g.
+  "music for the gym" -> "high energy hip hop electronic dance upbeat".
+- Always keep artist or song names the user mentions.
 - Return valid JSON only.
 
 User request: {description}

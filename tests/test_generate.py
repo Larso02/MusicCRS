@@ -81,7 +81,8 @@ def test_missing_description_explains_usage(gen_agent, say):
 def test_non_empty_playlist_asks_before_replacing(gen_agent, say):
     say(gen_agent, "add Yellow by Coldplay")
     text, tracks = say(gen_agent, "/generate calm piano music")
-    assert "replaces your current playlist" in text and "(1 songs)" in text
+    assert "replaces your current playlist" in text and "1 song" in text
+    assert "<b/>" not in text                                  # every <b> is closed with </b>
     assert len(tracks) == 1                                   # nothing changed yet
     assert gen_agent._playlist_generator.requests == []       # and no LLM call was made
 
@@ -220,3 +221,28 @@ def test_generation_fuses_bm25_and_dense(pg):
     generator.dense = Dense()
     ids, method = generator.candidates("rock")
     assert method == "bm25+dense" and ids[0] == "b" and set(ids) == {"a", "b", "c"}
+
+
+# ---------- the request sent to the LLM ----------
+class FakeLLM:
+    def __init__(self, reply):
+        self.reply = reply
+        self.prompts = []
+        self.chat = self
+        self.completions = self
+
+    def create(self, model, messages, temperature):
+        self.prompts.append(messages[0]["content"])
+        choice = type("C", (), {"message": type("M", (), {"content": self.reply})()})()
+        return type("R", (), {"choices": [choice]})()
+
+
+def test_the_prompt_keeps_activity_words_out_of_the_search_query(pg):
+    llm = FakeLLM('```json\n{"search_query": "high energy hip hop", "duration_minutes": 60}\n```')
+    generator = pg.PlaylistGenerator.__new__(pg.PlaylistGenerator)
+    generator.llm, generator.model = llm, "some-model"
+    plan = generator.interpret_request("music for the gym")
+    assert plan["search_query"] == "high energy hip hop"          # a code fence is accepted
+    prompt = llm.prompts[0]
+    assert "music for the gym" in prompt
+    assert "Do NOT put the place or activity itself" in prompt     # so 'gym' does not match
