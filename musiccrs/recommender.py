@@ -82,7 +82,7 @@ class Recommender:
                 list_tags[tag] = list_tags.get(tag, 0) + 1
 
         picked, per_artist, seen_titles, known = [], {}, set(), 0
-        for i in np.argsort(-s)[: 40*k]:
+        for i in np.argsort(-s)[: 500*k]:
             artist = self.artist_of[i]
             title = (self.titles[i].lower(), artist)
             if per_artist.get(artist, 0) >= MAX_PER_ARTIST or title in seen_titles:

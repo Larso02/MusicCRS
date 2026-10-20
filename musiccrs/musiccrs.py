@@ -24,6 +24,7 @@ from capabilities import help_answer, is_help_request
 from playlist_generator import PlaylistGenerator, warm_up as warm_up_generator
 from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
 from recommender import Recommender
+from selection import parse_selection
 
 load_dotenv()
 
@@ -124,6 +125,7 @@ class MusicCRS(Agent):
         self._offer: list[dict] | None = None
         self._pending_then: Callable[[dict, str], str] | None = None
         self._pending_cancel = "Okay, I won't add anything."
+        self._pending_multi = False
         self._last_track: dict | None = None
         self._recommended: list[str] = []
 
@@ -211,13 +213,19 @@ class MusicCRS(Agent):
         self._offer = tracks
         self._pending_then = then or self._add_chosen
         self._pending_cancel = cancel_text
+        self._pending_multi = self._pending_then == self._add_chosen
         listing = "<br>".join(
             f"{i}. {self._track_label(t)}" + (f" <i> ({html.escape(notes[i-1])}) </i>" if notes else "") for i, t in enumerate(tracks, start=1)
         )
         return (
             f"{propmt}<br>"
             f"{listing}<br>"
-            "Pick a number, name the artist, or say <i>cancel</i>."
+            + (
+                "Pick a number, or several (<i>1 and 3</i>, <i>the first two</i>, <i>all</i>, "
+                "<i>all except 2</i>), name the artist, or say <i>cancel</i>."
+                if self._pending_multi
+                else "Pick a number, name the artist, or say <i>cancel</i>."
+            )
         )
 
 
@@ -251,12 +259,53 @@ class MusicCRS(Agent):
                 return "pick", hits[0]
         return None, None
 
+    def _add_many(self, tracks: list[dict]) -> str:
+        added, skipped = [], []
+        for track in tracks:
+            if track["track_id"] in self._playlist:
+                skipped.append(track)
+            else:
+                self._playlist.append(track["track_id"])
+                added.append(track)
+        if tracks:
+            self._last_track = tracks[-1]
+
+        lines = []
+        if added:
+            lines.append(
+                f"Added {self._plural(len(added), 'song')} to your playlist:<br>"
+                + "<br>".join(self._track_label(t) for t in added)
+            )
+        if skipped:
+            lines.append(
+                "Already on your playlist: " + ", ".join(self._track_label(t) for t in skipped) + "."
+            )
+        return "<br>".join(lines)
+
     def _handle_choice(self, command: str, options: list[dict], is_command: bool) -> str | None:
         then = self._pending_then or self._add_chosen
         for t in options:
             if norm(command) == norm(self._plain_label(t)):
                 self._pending = None
                 return then(t, "")
+
+        picked = parse_selection(command, len(options))
+        if not picked:                                    # by name; several only with "ones"/"all"
+            labels = None if is_command else [norm(self._plain_label(t)) for t in options]
+            if labels is not None:
+                picked = parse_selection(command, len(options), labels)
+                if picked and len(picked) > 1 and not re.search(r"\b(?:ones|songs|tracks|all|every)\b", command.lower()):
+                    picked = None
+        if picked:
+            chosen = [options[i - 1] for i in picked]
+            if len(chosen) == 1:
+                self._pending = None
+                return then(chosen[0], "")
+            if self._pending_multi:
+                self._pending = None
+                return self._add_many(chosen)
+            self._offer = options
+            return "That is about one song. Pick one number from the list, or say <i>cancel</i>."
         
         if is_command:
             self._pending = None

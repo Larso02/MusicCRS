@@ -42,12 +42,14 @@ CAPABILITIES = {
     },
     "choose": {
         "available": True,
-        "keywords": {"choose", "pick", "select", "ambiguous", "options", "several"},
+        "keywords": {"choose", "pick", "select", "ambiguous", "options", "several", "multiple", "many"},
         "title": "Choose between songs",
         "summary": "pick the right song when several match",
         "text": (
             "When I ask which song you mean, click a button, type its number, say "
-            "<i>the second one</i>, or name the artist. Say <i>cancel</i> to skip."
+            "<i>the second one</i>, or name the artist. When I suggest songs to add you can "
+            "take several at once: <i>1 and 3</i>, <i>the first two</i>, <i>2-4</i>, <i>all</i> "
+            "or <i>all except the second</i>. Say <i>cancel</i> to skip."
         ),
     },
     "ask": {
