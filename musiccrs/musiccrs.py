@@ -92,9 +92,26 @@ _YES = {"yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "do it", "go ahe
 _NO = {"no", "n", "nope", "cancel", "nevermind", "never mind", "keep it", "dont", "no thanks",
        "no thank you", "keep my playlist", "keep the playlist", "stop"}
 
-
-_VIEW = ("/playlist", "/list", "show playlist", "show my playlist", "view playlist", "what's in my playlist", "what is in my playlist")
-_CLEAR = ("/clear", "clear playlist", "clear my playlist", "empty playlist")
+_EXCEPT_WORDS = re.compile(r"\b(?:except|but|without|excluding|besides|other than|apart from)\b", re.I)
+_THE_PLAYLIST = r"(?:(?:the|my|this|your|current)\s+)*(?:play ?list|queue)"
+_VIEW_RE = re.compile(
+    r"^(?:/playlist|/list"
+    r"|(?:please\s+|can you\s+|could you\s+)?(?:show|view|display|see|open|list|give|get)(?:\s+me)?\s+(?:all\s+)?"
+    r"(?:(?:the|my|current)\s+)*(?:play ?list|queue|songs|tracks)(?:\s+so far)?"
+    r"|(?:please\s+)?(?:what(?:'s|\s+is)\s+(?:in|on)|what\s+do\s+i\s+have\s+(?:in|on))\s+" + _THE_PLAYLIST +
+    r"|what\s+(?:songs|tracks)\s+(?:do\s+i\s+have|are\s+(?:in|on)\s+" + _THE_PLAYLIST + r")"
+    r"|(?:my\s+)?play ?list)\s*[?.!]*$",
+    re.I,
+)
+_CLEAR_RE = re.compile(
+    r"^(?:/clear"
+    r"|(?:please\s+|can you\s+|could you\s+)?(?:clear|empty|reset|wipe)(?:\s+(?:out|up))?"
+    r"(?:\s+(?:it|everything|all|" + _THE_PLAYLIST + r"))?"
+    r"|(?:please\s+)?(?:start\s+(?:over|again|from\s+scratch)|start\s+a\s+new\s+play ?list)"
+    r"|(?:please\s+)?(?:remove|delete|drop)\s+(?:all|everything)(?:\s+(?:the\s+|my\s+)?(?:songs|tracks))?"
+    r"(?:\s+(?:from|in|on)\s+" + _THE_PLAYLIST + r")?)\s*[?.!]*$",
+    re.I,
+)
 
 _ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10}
 _CANCEL = {"cancel", "no", "none", "neither", "nevermind", "never mind", "skip", "no thanks", "no thank you", "nope", "not now", "not this time", "stop", "quit", "exit", "leave", "dismiss", "forget it", "forget about it", "forget that", "forget this", "forget it all", "forget everything", "forget all of this", "forget everything I said", "forget everything I just said", "forget everything I just told you", "forget everything I just told you about my playlist", "forget everything I just told you about my music preferences"}
@@ -239,7 +256,7 @@ class MusicCRS(Agent):
 
     def _parse_choice(self, text: str, options: list[dict]):
         t = norm(text)
-        if t in _CANCEL or t.startswith("none of"):
+        if t in _CANCEL or t.startswith(("none of", "nothing", "no song")):
             return "cancel", None
 
         words = [w for w in t.split() if w not in _FILLER]
@@ -290,11 +307,13 @@ class MusicCRS(Agent):
                 return then(t, "")
 
         picked = parse_selection(command, len(options))
-        if not picked:                                    # by name; several only with "ones"/"all"
-            labels = None if is_command else [norm(self._plain_label(t)) for t in options]
+        if not picked:
+            has_except = bool(_EXCEPT_WORDS.search(command))                                    # by name; several only with "ones"/"all"
+            labels =[norm(self._plain_label(t)) for t in options] if (has_except or not is_command) else None
             if labels is not None:
                 picked = parse_selection(command, len(options), labels)
-                if picked and len(picked) > 1 and not re.search(r"\b(?:ones|songs|tracks|all|every)\b", command.lower()):
+                plural_cue = has_except or re.search(r"\b(?:ones|songs|tracks|all|every)\b", command.lower())
+                if picked and len(picked) > 1 and not plural_cue:
                     picked = None
         if picked:
             chosen = [options[i - 1] for i in picked]
@@ -367,6 +386,11 @@ class MusicCRS(Agent):
     # Remove track
     # --------------------------------------------------
 
+    def _remove_chosen(self, track: dict, note: str="") -> str:
+        if track["track_id"] in self._playlist:
+            self._playlist.remove(track["track_id"])
+        return f"Removed {self._track_label(track)}.{note}"
+        
     def _remove_track(self, query: str) -> str:
         """Remove a playlist track by ID or title and artist."""
         query = query.strip()
@@ -386,7 +410,7 @@ class MusicCRS(Agent):
         # Support title-based removal:
         # "Yellow"
         # "Yellow by Coldplay"
-        words = norm(re.sub(r"\s+by\s+", " ", query, flags=re.I)).split()
+        words = [w for w in norm(query).split() if w not in _FILLER]
         if not words:
             return "Please specify a track to remove."
 
@@ -406,9 +430,9 @@ class MusicCRS(Agent):
                 for t in matches
             )
 
-            return (
-                f"Multiple tracks match: {choices}. "
-                "Please specify the artist or use the Remove button."
+            return self._ask_which(
+                f"Several songs on your playlist match '{html.escape(query)}'. Which one should I remove?",
+                matches, self._remove_chosen, "Okay, I won't remove anything.",
             )
 
         track = matches[0]
@@ -580,7 +604,7 @@ class MusicCRS(Agent):
         if self._playlist and not confirmed:
             self._confirm_generate = description
             return (
-                f"A new playlist for '{html.escape(description)}' <b>replaces your current playlist</b> {len(self._playlist)} song. "
+                f"A new playlist for '{html.escape(description)}' <b>replaces your current playlist</b> ({self._plural(len(self._playlist), 'song')}). "
                 "Say <b>yes</b> to continue or <b>no</b> to keep it."
             )
 
@@ -669,7 +693,7 @@ class MusicCRS(Agent):
         choice = None
         if self._pending and confirmation is None:
             is_command = bool(
-                m_add or m_remove or lowered in _VIEW or lowered in _CLEAR or lowered.startswith("/") or is_help_request(command)
+                m_add or m_remove or _VIEW_RE.match(command) or _CLEAR_RE.match(command) or lowered.startswith("/") or is_help_request(command)
                 or question is not None or _RECOMMEND_RE.match(command) or _GENERATE_RE.match(command)
             )
             choice = self._handle_choice(command, self._pending, is_command)
@@ -680,7 +704,7 @@ class MusicCRS(Agent):
             response = choice
 
         # View playlist.
-        elif lowered in _VIEW:
+        elif _VIEW_RE.match(command):
             tracks = self._playlist_tracks()
             if not tracks:
                 response = "Your playlist is empty."
@@ -693,7 +717,7 @@ class MusicCRS(Agent):
             
 
         # Clear playlist.
-        elif lowered in _CLEAR:
+        elif _CLEAR_RE.match(command):
             self._playlist.clear()
             self._recommended.clear()
             response = "Your playlist has been cleared."
