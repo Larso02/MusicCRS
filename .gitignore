@@ -26,4 +26,5 @@ build/
 dist/
 
 # Generated track database
-data/*.db
+data/*
+!data/tag_labels.json

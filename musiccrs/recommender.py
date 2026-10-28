@@ -6,9 +6,9 @@ import numpy as np
 import scipy.sparse as sp
 
 try:
-    from track_database import TAG_STOPLIST
+    from track_database import is_descriptive_tag
 except ImportError:
-    from musiccrs.track_database import TAG_STOPLIST
+    from musiccrs.track_database import is_descriptive_tag
 
 WEIGHTS = {"artist": 1.0, "album": 0.5, "last": 1.0, "pop": 1.0, "tag": 1.0, "year":0.5}
 MAX_PER_ARTIST = 2
@@ -30,7 +30,8 @@ class Recommender:
             vocab, r_idx, c_idx = {}, [], []
             self.tags: list[set[str]] = []
             for i, r in enumerate(rows):
-                tags = {t.strip().lower() for t in json.loads(r[6] or "[]")} - TAG_STOPLIST - {""}
+                names = {r[1].lower(), *(a.lower() for a in json.loads(r[2])), *(a.lower() for a in json.loads(r[3] or "[]"))}
+                tags = {t for t in {t.strip().lower() for t in json.loads(r[6] or "[]")} if is_descriptive_tag(t, names)}
                 self.tags.append(tags)
                 for tag in tags:
                     r_idx.append(i)

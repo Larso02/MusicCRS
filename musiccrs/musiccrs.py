@@ -18,12 +18,13 @@ from dialoguekit.participant.agent import Agent
 from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
 
-from track_database import TrackDatabase, norm, clean_tags
+from track_database import TrackDatabase, norm
 from fuzzy import FuzzyTrackIndex
 from capabilities import help_answer, is_help_request
 from playlist_generator import PlaylistGenerator, warm_up as warm_up_generator
 from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
 from recommender import Recommender
+from router import Router
 from selection import parse_selection
 
 load_dotenv()
@@ -94,6 +95,16 @@ _NO = {"no", "n", "nope", "cancel", "nevermind", "never mind", "keep it", "dont"
 
 _EXCEPT_WORDS = re.compile(r"\b(?:except|but|without|excluding|besides|other than|apart from)\b", re.I)
 _THE_PLAYLIST = r"(?:(?:the|my|this|your|current)\s+)*(?:play ?list|queue)"
+_QUIT_REPLY = "\0quit"
+
+# the LLM's question kinds -> the kinds answered by _answer_question
+_ASK_KINDS = {
+    "track": {"artist": "track_artist", "album": "track_album", "year": "track_year", "length": "track_length",
+              "popularity": "track_popularity", "tags": "tags", "about": "about"},
+    "artist": {"songs": "artist_songs", "albums": "artist_albums", "count": "artist_count", "top": "artist_top",
+               "tags": "tags", "about": "about"},
+}
+
 _VIEW_RE = re.compile(
     r"^(?:/playlist|/list"
     r"|(?:please\s+|can you\s+|could you\s+)?(?:show|view|display|see|open|list|give|get)(?:\s+me)?\s+(?:all\s+)?"
@@ -132,6 +143,8 @@ class MusicCRS(Agent):
             )
         else:
             self._llm = None
+        # LLM-first understanding; the rule-based parsers are the fallback
+        self._router = Router(self._llm, LLM_MODEL) if self._llm else None
 
         # TalkPlay database containing verified tracks.
         self._db = TrackDatabase()
@@ -145,6 +158,7 @@ class MusicCRS(Agent):
         self._pending_multi = False
         self._last_track: dict | None = None
         self._recommended: list[str] = []
+        self._feedback: list[dict] = []           # opinions from the LLM, input for Part 4
 
     def welcome(self) -> None:
         """Send the agent's welcome message."""
@@ -299,6 +313,19 @@ class MusicCRS(Agent):
             )
         return "<br>".join(lines)
 
+    def _apply_selection(self, picked: list[int], options: list[dict]) -> str:
+        """Carry out a choice of one or several songs from the open list (positions are 1-based)."""
+        then = self._pending_then or self._add_chosen
+        chosen = [options[i - 1] for i in picked]
+        if len(chosen) == 1:
+            self._pending = None
+            return then(chosen[0], "")
+        if self._pending_multi:
+            self._pending = None
+            return self._add_many(chosen)
+        self._offer = options
+        return "That is about one song. Pick one number from the list, or say <i>cancel</i>."
+
     def _handle_choice(self, command: str, options: list[dict], is_command: bool) -> str | None:
         then = self._pending_then or self._add_chosen
         for t in options:
@@ -316,15 +343,7 @@ class MusicCRS(Agent):
                 if picked and len(picked) > 1 and not plural_cue:
                     picked = None
         if picked:
-            chosen = [options[i - 1] for i in picked]
-            if len(chosen) == 1:
-                self._pending = None
-                return then(chosen[0], "")
-            if self._pending_multi:
-                self._pending = None
-                return self._add_many(chosen)
-            self._offer = options
-            return "That is about one song. Pick one number from the list, or say <i>cancel</i>."
+            return self._apply_selection(picked, options)
         
         if is_command:
             self._pending = None
@@ -529,7 +548,7 @@ class MusicCRS(Agent):
                 f"higher than {pct}% of the songs in my catalog."
             )
         if kind == "tags":
-            tags = clean_tags(d.get("tags") or [])
+            tags = self._db.song_tags(d)
             if not tags:
                 return f"I don't have tags for {title} by {by}."
             return f"{title} by {by} is tagged: {html.escape(', '.join(tags))}."
@@ -680,10 +699,38 @@ class MusicCRS(Agent):
     # --------------------------------------------------
 
     def receive_utterance(self, utterance: Utterance) -> None:
-        """Handle a new user message."""
-        dialogue_acts = []
+        """Handle a new user message: the LLM first, the rule-based parsers as the fallback."""
         self._offer = None
         command = utterance.text.strip()
+        dialogue_acts: list[DialogueAct] = []
+
+        response = self._route(command)
+        if response == _QUIT_REPLY:
+            self.goodbye()
+            return
+        if response is None:                      # no LLM, too slow, or not understood
+            response, dialogue_acts = self._reply_by_rules(command)
+            if response is None:
+                self.goodbye()
+                return
+
+        dialogue_acts.append(self._playlist_act())
+        if self._offer:
+            dialogue_acts.append(self._options_act(self._offer))
+        self._dialogue_connector.register_agent_utterance(
+            AnnotatedUtterance(
+                response,
+                participant=DialogueParticipant.AGENT,
+                dialogue_acts=dialogue_acts,
+            )
+        )
+
+    def _reply_by_rules(self, command: str) -> tuple[str | None, list[DialogueAct]]:
+        """The rule-based parsers (regular expressions): the fallback when the LLM cannot be used.
+
+        Returns (reply, dialogue acts); the reply is None when the user wants to quit.
+        """
+        dialogue_acts: list[DialogueAct] = []
         lowered = command.lower()
         m_add, m_remove = _ADD_RE.match(command), _REMOVE_RE.match(command)
         question = parse_question(command)
@@ -705,22 +752,12 @@ class MusicCRS(Agent):
 
         # View playlist.
         elif _VIEW_RE.match(command):
-            tracks = self._playlist_tracks()
-            if not tracks:
-                response = "Your playlist is empty."
-            else:
-                listing = "<br>".join(
-                    f"{i}. {self._track_label(t)}" for i, t in enumerate(tracks, start=1)
-                )
-                word = "song" if len(tracks) == 1 else "songs"
-                response = f"Your playlist contains {len(tracks)} {word}:<br>{listing}"
+            response = self._show_playlist()
             
 
         # Clear playlist.
         elif _CLEAR_RE.match(command):
-            self._playlist.clear()
-            self._recommended.clear()
-            response = "Your playlist has been cleared."
+            response = self._clear_playlist()
 
         # R8: Generate a complete playlist.
         elif m_generate:
@@ -774,24 +811,143 @@ class MusicCRS(Agent):
 
         # End conversation.
         elif lowered == "/quit" or norm(command) in _QUIT:
-            self.goodbye()
-            return
+            return None, []
 
         else:
             response = (
                 "I'm sorry, I don't understand that. "
                 "Say <i>help</i> to see what I can do."
             )
-        dialogue_acts.append(self._playlist_act())
-        if self._offer:
-            dialogue_acts.append(self._options_act(self._offer))
-        self._dialogue_connector.register_agent_utterance(
-            AnnotatedUtterance(
-                response,
-                participant=DialogueParticipant.AGENT,
-                dialogue_acts=dialogue_acts,
-            )
-        )
+
+        return response, dialogue_acts
+
+    # --------------------------------------------------
+    # LLM-first routing
+    # --------------------------------------------------
+
+    def _show_playlist(self) -> str:
+        tracks = self._playlist_tracks()
+        if not tracks:
+            return "Your playlist is empty."
+        listing = "<br>".join(f"{i}. {self._track_label(t)}" for i, t in enumerate(tracks, start=1))
+        word = "song" if len(tracks) == 1 else "songs"
+        return f"Your playlist contains {len(tracks)} {word}:<br>{listing}"
+
+    def _clear_playlist(self) -> str:
+        self._playlist.clear()
+        self._recommended.clear()
+        return "Your playlist has been cleared."
+
+    def _router_state(self) -> dict:
+        """What the LLM needs to resolve 'the first two', 'it' or 'yes'."""
+        return {
+            "playlist": [self._plain_label(t) for t in self._playlist_tracks()][-30:],
+            "last": self._plain_label(self._last_track) if self._last_track else None,
+            "open_list": [self._plain_label(t) for t in self._pending or []],
+            "pending_confirm": (
+                f"Replace the current playlist with a new one for '{self._confirm_generate}'?"
+                if self._confirm_generate else None
+            ),
+        }
+
+    def _route(self, command: str) -> str | None:
+        """Understand the message with the LLM and carry it out; None means 'use the rules'."""
+        if self._router is None or not command or command.startswith("/"):
+            return None                           # slash commands are exact; the UI buttons use them
+        if any(norm(command) == norm(self._plain_label(t)) for t in self._pending or []):
+            return None                           # a click on an option button
+        action = self._router.route(command, self._router_state())
+        if action is None:
+            return None
+
+        pending = self._pending
+        if action["action"] != "select":
+            self._pending = None                  # any other request closes an open list
+        reply = self._do_action(action, command)
+        if reply is None:
+            self._pending = pending               # not understood after all: the rules take over
+        return reply
+
+    def _do_action(self, action: dict, command: str) -> str | None:
+        kind = action["action"]
+
+        def text(key: str) -> str:
+            value = action.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        if self._confirm_generate is not None and kind != "confirm":
+            self._confirm_generate = None         # the user moved on without answering
+        if kind == "confirm":
+            description, self._confirm_generate = self._confirm_generate, None
+            if description is None:
+                return None
+            if text("answer").lower() == "yes":
+                return self._generate_playlist(description, confirmed=True)
+            return "Okay, I'll keep your current playlist."
+        if kind == "select":
+            return self._do_select(action)
+        if kind == "quit":
+            return _QUIT_REPLY
+        if kind == "view":
+            return self._show_playlist()
+        if kind == "clear":
+            return self._clear_playlist()
+        if kind == "help":
+            return help_answer(text("topic") or command)
+        if kind == "add":
+            if not text("title"):
+                return None
+            artist = text("artist")
+            return self._add_track(text("title") + (f" by {artist}" if artist else ""))
+        if kind == "remove":
+            query = " ".join(x for x in (text("title"), text("artist")) if x)
+            return self._remove_track(query) if query else None
+        if kind == "ask":
+            subject_type = text("subject_type").lower()
+            question_kinds = _ASK_KINDS.get(subject_type if subject_type in _ASK_KINDS else "track", {})
+            internal = question_kinds.get(text("kind").lower())
+            if internal is None:                  # the LLM mixed up track and artist kinds
+                internal = {**_ASK_KINDS["track"], **_ASK_KINDS["artist"]}.get(text("kind").lower())
+            if internal is None:
+                return None
+            subject = "it" if subject_type == "last" else text("subject")
+            return self._answer_question(Question(internal, subject)) if subject else None
+        if kind == "recommend":
+            return self._recommend()
+        if kind == "generate":
+            return self._generate_playlist(text("description")) if text("description") else None
+        if kind == "feedback":
+            self._feedback.append(action)         # Part 4 turns this into a preference profile
+            return self._recommend()
+        if kind == "chat":
+            return html.escape(text("reply")) or None
+        return None
+
+    def _do_select(self, action: dict) -> str | None:
+        options = self._pending
+        if not options:
+            return None
+        n = len(options)
+
+        def numbers(key: str) -> list[int] | None:
+            raw = action.get(key) or []
+            try:
+                values = [int(v) for v in raw]
+            except (TypeError, ValueError):
+                return None
+            return values if all(1 <= v <= n for v in values) else None
+
+        positions, skip = numbers("positions"), numbers("except")
+        if positions is None or skip is None:
+            return None                           # a number outside the list: do not guess
+        mode = str(action.get("mode") or "").lower()
+        if mode == "none":
+            self._pending = None
+            return self._pending_cancel
+        if mode == "all" or (not positions and skip):
+            positions = list(range(1, n + 1))
+        picked = sorted({i for i in positions if i not in skip})
+        return self._apply_selection(picked, options) if picked else None
 
     # --------------------------------------------------
     # Other response handlers

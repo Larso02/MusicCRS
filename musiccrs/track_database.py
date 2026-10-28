@@ -17,22 +17,57 @@ from functools import lru_cache
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "tracks.db"
 
-TAG_STOPLIST = {"favorites", "favorite", "favourites", "favourite", "my favorites", "awesome",
-                "seen live", "good", "great", "amazing", "cool", "best", "check out"}
+TAG_LABELS_PATH = DATABASE_PATH.parent / "tag_labels.json"
 
 def artist_key(artist: str) -> str:
     return re.sub(r"^the ", "", norm(artist))
 
-def clean_tags(tags, k: int = 6) -> list[str]:
+@lru_cache(maxsize=1)
+def _descriptive_tags() -> frozenset[str] | None:
+    """Tags the LLM judged to describe the music (data/tag_labels.json, made by
+    scripts/label_tags.py). None if the file has not been generated."""
+    try:
+        labels = json.loads(TAG_LABELS_PATH.read_text(encoding="utf-8"))["labels"]
+    except (OSError, ValueError, KeyError):
+        return None
+    return frozenset(tag for tag, keep in labels.items() if keep)
+
+
+def is_descriptive_tag(tag: str, names=()) -> bool:
+    """True for a tag that describes the music (genre, mood, era ...).
+
+    The judgement was made once by the LLM for every tag used by at least 10 tracks; rarer tags
+    count as noise. A tag equal to the song's own title, artist or album (names) says nothing.
+    Without the label file every tag passes.
+    """
+    low = tag.strip().lower()
+    if not low or low in names:
+        return False
+    good = _descriptive_tags()
+    return True if good is None else low in good
+
+
+@lru_cache(maxsize=4)
+def _tag_counts(db_path: str) -> Counter:
+    """tag -> number of tracks that have it (built once per process)."""
+    counts: Counter = Counter()
+    with closing(sqlite3.connect(db_path)) as conn:
+        for (tags,) in conn.execute("SELECT tags FROM tracks"):
+            counts.update({t.strip().lower() for t in json.loads(tags or "[]")})
+    return counts
+
+
+def clean_tags(tags, k: int = 6, names=(), counts=None) -> list[str]:
+    """The first k distinct descriptive tags; counts (tag -> tracks) puts the common ones first."""
     seen, out = set(), []
     for tag in tags:
         low = tag.strip().lower()
-        if low and low not in seen and low not in TAG_STOPLIST:
+        if low not in seen and is_descriptive_tag(low, names):
             seen.add(low)
-            out.append(tag.strip())
-            if len(out) == k:
-                break
-    return out
+            out.append(low)
+    if counts is not None:
+        out.sort(key=lambda t: -counts.get(t, 0))
+    return out[:k]
 
 @lru_cache(maxsize=4)
 def _artist_table(db_path: str) -> dict:
@@ -204,8 +239,18 @@ class TrackDatabase:
             "SELECT t.tags FROM tracks t JOIN track_artists a ON a.track_id = t.track_id"
             " WHERE a.artist_key = ?"
         )
+        names = {_artist_table(str(self.db_path)).get(key, ("", 0))[0].lower(), key}
         counts = Counter()
         with closing(self._connect()) as conn:
             for (tags,) in conn.execute(sql, (key,)):
-                counts.update({t.strip().lower() for t in json.loads(tags or "[]")} - TAG_STOPLIST - {""})
+                counts.update(
+                    t for t in {t.strip().lower() for t in json.loads(tags or "[]")}
+                    if is_descriptive_tag(t, names)
+                )
         return [tag for tag, _ in counts.most_common(k)]
+
+    def song_tags(self, details, k=6):
+        """The song's descriptive tags, the most common first (details from get_details)."""
+        names = {details["track_name"].lower()}
+        names |= {a.lower() for a in details["artist_name"]} | {a.lower() for a in details["album_name"]}
+        return clean_tags(details.get("tags") or [], k, names, _tag_counts(str(self.db_path)))
