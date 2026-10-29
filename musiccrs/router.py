@@ -30,11 +30,11 @@ Actions and their fields:
 - clear: empty the playlist
 - help: topic (null, or a word such as "add", "remove", "recommend")
 - ask: kind, subject, subject_type. subject_type is "track", "artist" or "last" (the song just discussed: "it", "this song"). For a song, write the subject as "Title by Artist" whenever the user gave the artist or the song is on the PLAYLIST. kind for tracks: artist, album, year, length, popularity, tags, about. kind for artists: songs, albums, count, top, tags, about.
-- recommend: hint (an extra wish such as "more mellow", or null)
+- recommend: hint (a style wish such as "more mellow"; null for plain requests like "similar" or "like these"), variety (only when the user explicitly asks for a different mix: "more" for "more varied", "different", "mix it up"; "less" for "more of the same style"; otherwise null. "similar", "like these", "a few more" and "more please" are NOT variety requests)
 - select: choose from the OPEN LIST. Use positions (list of numbers), or mode "all" / "none", and "except" (list of numbers) to leave some out. Only when an open list exists.
 - generate: description (a whole new playlist from a description, for example "gym" or "sad love songs")
 - confirm: answer "yes" or "no" (only when a question is pending)
-- feedback: liked (list of strings), disliked (list of strings), wish (text): opinions about recommended songs or styles
+- feedback: opinions about the recommended songs or about styles. Fields: liked_positions and disliked_positions (numbers from the OPEN LIST or the LAST RECOMMENDATIONS), liked_artists, disliked_artists (names), liked_tags, disliked_tags (music styles, genres or moods in plain words, such as "heavy metal" or "alternative rock"; a complaint like "too heavy" is a disliked tag), wish (what the user wants MORE of, as a short phrase; never a complaint; null if none), variety (only if the user explicitly asks for more varied songs: "more", or for more of the same style: "less"). Include only the fields that apply.
 - quit: the user wants to end the conversation
 - chat: anything else (greetings, thanks, off-topic); put a short friendly reply in "reply"
 
@@ -53,6 +53,9 @@ def build_user_message(message: str, state: dict) -> str:
              "LAST SONG: " + (state.get("last") or "(none)")]
     if state.get("open_list"):
         lines.append("OPEN LIST: " + " | ".join(f"{i}. {t}" for i, t in enumerate(state["open_list"], 1)))
+    if state.get("last_recommendations") and not state.get("open_list"):
+        lines.append("LAST RECOMMENDATIONS: " + " | ".join(
+            f"{i}. {t}" for i, t in enumerate(state["last_recommendations"], 1)))
     if state.get("pending_confirm"):
         lines.append("PENDING QUESTION: " + state["pending_confirm"])
     lines.append("MESSAGE: " + message)

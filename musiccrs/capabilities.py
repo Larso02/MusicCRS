@@ -67,6 +67,18 @@ CAPABILITIES = {
             "After you add or ask about a song, <i>who sings it?</i> works too."
         ),
     },
+    "refine": {
+        "available": True,
+        "keywords": {"feedback", "like", "dislike", "refine", "varied", "variety", "preferences"},
+        "title": "Learn from your feedback",
+        "summary": "adjust the recommendations to what you like and dislike",
+        "text": (
+            "Tell me what you think of the suggestions: <i>I like the first two but the others are too heavy</i>, "
+            "<i>no more Coldplay</i>, <i>more alternative rock</i> or <i>make it more varied</i>. "
+            "I remember it during the chat and say what changed. Adding a suggested song counts as a like, "
+            "removing one as a dislike."
+        ),
+    },
     "generate": {
         "available": True,
         "keywords": {"generate", "create", "build", "make", "description"},

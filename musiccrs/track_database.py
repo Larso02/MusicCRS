@@ -47,6 +47,31 @@ def is_descriptive_tag(tag: str, names=()) -> bool:
     return True if good is None else low in good
 
 
+def match_tag(text: str) -> str | None:
+    """The descriptive tag the user's words mean: the same tag, a close spelling, a tag contained in
+    the words ("90s vibe" -> "90s"), or a tag that contains them ("heavy" -> "heavy metal").
+    Among several candidates the one used by the most tracks wins."""
+    good = _descriptive_tags()
+    low = " ".join(text.lower().split())
+    if not good or not low:
+        return None
+    if low in good:
+        return low
+    counts = _tag_counts(str(DATABASE_PATH))
+
+    def commonest(tags):
+        return max(tags, key=lambda tag: (counts.get(tag, 0), -len(tag))) if tags else None
+
+    close = difflib.get_close_matches(low, good, n=5, cutoff=0.85)
+    if close:
+        return commonest(close)
+    inside = [tag for tag in good if re.search(r"\b" + re.escape(tag) + r"\b", low)]
+    if inside:
+        return max(inside, key=lambda tag: (len(tag), counts.get(tag, 0)))
+    around = [tag for tag in good if re.search(r"\b" + re.escape(low) + r"\b", tag)]
+    return commonest(around)
+
+
 @lru_cache(maxsize=4)
 def _tag_counts(db_path: str) -> Counter:
     """tag -> number of tracks that have it (built once per process)."""

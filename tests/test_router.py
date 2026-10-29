@@ -234,11 +234,14 @@ def test_another_request_cancels_the_replace_question(ask, say, agent):
     assert agent._confirm_generate is None
 
 
-def test_feedback_is_recorded_and_answered_with_new_recommendations(ask, say, agent):
+def test_feedback_updates_the_profile_and_answers_with_a_refined_list(ask, say, agent):
     say(agent, "add Yellow by Coldplay")
-    text, _ = ask("less metal, more indie", {"action": "feedback", "wish": "less metal, more indie"})
-    assert agent._feedback and agent._feedback[0]["wish"] == "less metal, more indie"
-    assert "you might like" in text
+    ask("more please", {"action": "recommend", "hint": None})
+    text, _ = ask("no more coldplay, more grunge", {
+        "action": "feedback", "disliked_artists": ["Coldplay"], "liked_tags": ["grunge"]})
+    assert "coldplay" in agent._profile.disliked_artists and "grunge" in agent._profile.liked_tags
+    assert "Compared with the last list" in text and "Here is the new list" in text
+    assert "Coldplay" not in " ".join(t["artist_name"][0] for t in agent._last_recs)
 
 
 def test_chat_reply_is_escaped(ask):
