@@ -5,13 +5,16 @@ Three stages on top of the Part 1 BM25 retriever, driven by the session profile 
 1. Rocchio relevance feedback changes the QUERY before retrieval:
        q' = alpha*q + beta*mean(liked tracks) - gamma*mean(disliked tracks)
    q and the track vectors are weighted term vectors over title, artist, album and tag words.
-   BM25 then retrieves the top K candidates for q' (negative weights are clipped to zero because
-   BM25 cannot score a negative query weight; the rejected attributes are penalised in stage 2).
-2. A feedback-aware RERANKER rescores the K candidates:
-       score = w_bm25*BM25(q') + [Part 1 features: artist/album/last artist of the playlist, popularity]
-             + w_tag*liked-tag match + w_artist*liked-artist match - w_rej*rejected attribute
+   BM25 retrieves the top K candidates for q' (negative weights are clipped to zero because BM25
+   cannot score a negative query weight).
+2. A NEURAL RERANKER rescores the K candidates (neural.py): cosine similarity in the embedding spaces
+   of the challenge data (Qwen3 metadata embeddings and BPR collaborative-filtering embeddings) to the
+   playlist and liked songs, to the user's request, wishes and liked styles embedded as text, minus
+   similarity to what the user rejected. BM25 and tag counting play no part in this stage. A few
+   non-lexical priors from the Part 1 feature set (same artist or album as the playlist, popularity)
+   can be added. Songs and artists the user explicitly rejected are removed as a constraint.
 3. Maximal Marginal Relevance (MMR) picks the final list from the best candidates, trading
-   relevance against similarity to the songs already picked (lambda = 1 is plain ranking).
+   relevance against similarity (in the neural space) to the songs already picked.
 
 Every stage can be switched off, which is what the ablation in experiments/10_refine_eval.py does.
 Every item keeps its score components, so explanations are computed from facts, not generated.
@@ -157,23 +160,30 @@ class TermIndex:
 
 @dataclass
 class Config:
-    # stage 1: Rocchio
+    # stage 1: Rocchio query modification and BM25 retrieval
     rocchio: bool = True
     alpha: float = 1.0
     beta: float = 0.7
     gamma: float = 0.3
     top_terms: int = 40
     K: int = 1000                       # candidates taken from BM25
-    # stage 2: scoring (the first block is the Part 1 feature set, always on)
-    w_bm25: float = 1.0
+    # stage 2: the neural reranker (False = the Part 1 scoring: BM25 + priors, used as the baseline)
+    neural: bool = True
+    w_learned: float = 1.0               # the trained two-tower network (history -> track)
+    w_tracks: float = 0.0               # raw cosine to the playlist and liked songs (metadata space)
+    w_cf: float = 0.0                   # ... in the collaborative-filtering space
+    w_text: float = 0.5                 # similarity to wishes that match no tag (embedded as text)
+    w_styles: float = 0.5               # similarity to the liked styles (mean embedding of the tracks with the tag)
+    style_space: str = "learned"        # embedding space of the style prototypes: "learned" (best) or "meta"
+    w_negative: float = 1.0             # penalty for similarity to rejected songs ...
+    w_style_negative: float = 1.0       # ... and rejected styles
+    w_bm25: float = 1.0                 # only for neural=False
+    prior_scale: float = 1.0            # multiplies the four priors below (0 = none)
     w_artist_history: float = 1.0
     w_album_history: float = 0.5
     w_last_artist: float = 1.0
     w_pop: float = 1.0
-    rerank: bool = True                 # the feedback block below
-    w_tag: float = 0.5                  # tuned on the first half of 1,500 train turns (experiments/10_refine_eval.py)
-    w_liked_artist: float = 1.0
-    w_rejected: float = 8.0             # larger than all positive scores together: a rejection is final
+    hard_rejections: bool = True        # remove rejected artists and styles ("no more Coldplay")
     # stage 3: MMR (None = off); lambda in [0, 1]: 1 = relevance only
     mmr_lambda: float | None = None
     mmr_pool: int = 50
@@ -187,7 +197,8 @@ class Item:
 
 
 def liked_tag_weights(index: TermIndex, profile: Profile, liked: list[int]) -> dict[str, float]:
-    """Tags the user likes: stated ones count fully, tags of liked tracks by how common they are."""
+    """Styles the user likes: stated ones count fully, tags of liked tracks by how common they are
+    (used for the explanation text; the neural reranker reads the stated styles as text)."""
     weights = {t: 1.0 for t in profile.liked_tags}
     for tag, count in index.top_tags(liked, 8):
         weights.setdefault(tag, min(1.0, count / max(len(liked), 1)))
@@ -195,7 +206,7 @@ def liked_tag_weights(index: TermIndex, profile: Profile, liked: list[int]) -> d
 
 
 def rejected_tags(index: TermIndex, profile: Profile, liked: list[int], disliked: list[int]) -> set[str]:
-    """Tags the user rejects: stated ones, plus tags typical of rejected tracks and not of liked ones."""
+    """Styles the user rejects: stated ones, plus tags typical of rejected tracks and not of liked ones."""
     tags = set(profile.disliked_tags)
     keep = {t for i in liked for t in index.desc_tags[i]} | set(profile.liked_tags)
     tags |= {t for t, _ in index.top_tags(disliked, 5) if t not in keep}
@@ -203,10 +214,14 @@ def rejected_tags(index: TermIndex, profile: Profile, liked: list[int], disliked
 
 
 def refine(index: TermIndex, query_text: str, played: list[int], profile: Profile,
-           cfg: Config = Config(), k: int = 20, exclude: list[int] | None = None) -> list[Item]:
+           cfg: Config = Config(), k: int = 20, exclude: list[int] | None = None,
+           neural=None, encode=None, request: str = "") -> list[Item]:
     """The top k tracks for the query, given the playlist (played) and the preference profile.
 
-    exclude: tracks that must not be returned (for example songs already suggested).
+    query_text: text for the BM25 retrieval (for example the whole chat); request: the user's current
+    request, embedded for the neural reranker. neural: a neural.NeuralScorer (without it the Part 1
+    scoring is used); encode: str -> embedding, for the text anchors. exclude: tracks that must not be
+    returned (for example songs already suggested).
     """
     liked = [index.index[t] for t in profile.liked_tracks if t in index.index]
     disliked = [index.index[t] for t in profile.disliked_tracks if t in index.index]
@@ -226,44 +241,55 @@ def refine(index: TermIndex, query_text: str, played: list[int], profile: Profil
     top = scores[cand].max()
     bm = np.maximum(scores[cand], 0) / top if top > 0 else np.zeros(len(cand))
 
-    # stage 2: scoring
-    parts: dict[str, np.ndarray] = {"bm25": cfg.w_bm25 * bm, "popularity": cfg.w_pop * index.pop[cand]}
+    # stage 2: reranking
+    rej_tags = rejected_tags(index, profile, liked, disliked)
+    parts: dict[str, np.ndarray] = {}
+    use_neural = cfg.neural and neural is not None
+    if use_neural:
+        positives = list(dict.fromkeys(liked + played))
+        for key in profile.liked_artists:            # a liked artist is represented by its best-known songs
+            docs = index.artist_docs.get(key)
+            if docs is not None and len(docs):
+                positives += [int(d) for d in docs[np.argsort(-index.pop[docs])][:20]]
+        text = " ".join([request, *profile.wishes]).strip()
+        liked_styles = [index.tag_docs[tag] for tag in sorted(profile.liked_tags) if tag in index.tag_docs]
+        rejected_styles = [index.tag_docs[tag] for tag in sorted(rej_tags) if tag in index.tag_docs]
+        weights = {"learned": cfg.w_learned, "tracks": cfg.w_tracks, "cf": cfg.w_cf, "text": cfg.w_text,
+                   "styles": cfg.w_styles, "disliked_tracks": cfg.w_negative, "disliked_styles": cfg.w_style_negative}
+        comps = neural.components(cand, positives, disliked, text, encode, liked_styles, rejected_styles, cfg.style_space)
+        for name, z in comps.items():
+            parts[name] = weights[name] * z
+    else:
+        parts["bm25"] = cfg.w_bm25 * bm
+
+    s = cfg.prior_scale                              # priors: no BM25, no tags
+    parts["popularity"] = s * cfg.w_pop * index.pop[cand]
     if played:
-        parts["artist_history"] = cfg.w_artist_history * np.isin(index.artist_of[cand], index.artist_of[played])
-        parts["album_history"] = cfg.w_album_history * np.isin(index.album_of[cand], index.album_of[played])
-        parts["last_artist"] = cfg.w_last_artist * (index.artist_of[cand] == index.artist_of[played[-1]])
+        parts["artist_history"] = s * cfg.w_artist_history * np.isin(index.artist_of[cand], index.artist_of[played])
+        parts["album_history"] = s * cfg.w_album_history * np.isin(index.album_of[cand], index.album_of[played])
+        parts["last_artist"] = s * cfg.w_last_artist * (index.artist_of[cand] == index.artist_of[played[-1]])
 
     tag_w = liked_tag_weights(index, profile, liked)
-    rej_tags = rejected_tags(index, profile, liked, disliked)
-    if cfg.rerank:
-        tag_full = np.zeros(index.n, dtype=np.float32)
-        for tag, w in tag_w.items():
-            if tag in index.tag_docs:
-                tag_full[index.tag_docs[tag]] += w
-        parts["tag_match"] = cfg.w_tag * (tag_full[cand] / max(sum(tag_w.values()), 1e-9))
-
-        liked_art = np.zeros(index.n, dtype=np.float32)
-        for key in profile.liked_artists:
-            if key in index.artist_docs:
-                liked_art[index.artist_docs[key]] = 1.0
-        parts["liked_artist"] = cfg.w_liked_artist * liked_art[cand]
-
-        rej_full = np.zeros(index.n, dtype=np.float32)
+    total = sum(parts.values())
+    if cfg.hard_rejections:                          # a constraint, not a score: "no more Coldplay" is final
+        rej = np.zeros(index.n, dtype=bool)
         for tag in rej_tags:
             if tag in index.tag_docs:
-                rej_full[index.tag_docs[tag]] = 1.0
+                rej[index.tag_docs[tag]] = True
         for key in profile.disliked_artists:
             if key in index.artist_docs:
-                rej_full[index.artist_docs[key]] = 1.0
-        parts["rejected"] = -cfg.w_rejected * rej_full[cand]
-
-    total = sum(parts.values())
+                rej[index.artist_docs[key]] = True
+        total = np.where(rej[cand], total - 1e6, total)
     order = np.argsort(-total)
 
     # stage 3: MMR over the best candidates
     if cfg.mmr_lambda is not None:
         pool = order[: max(cfg.mmr_pool, k)]
-        picked = mmr(index, [int(cand[i]) for i in pool], total[pool], k, cfg.mmr_lambda)
+        vectors = None
+        if use_neural:
+            space = neural.tracks if neural.tracks is not None else neural.meta
+            vectors = space[[int(cand[i]) for i in pool]]
+        picked = mmr(index, [int(cand[i]) for i in pool], total[pool], k, cfg.mmr_lambda, vectors)
         order = np.array([pool[j] for j in picked])
     order = order[:k]
 
@@ -273,16 +299,23 @@ def refine(index: TermIndex, query_text: str, played: list[int], profile: Profil
         info = {name: float(v[i]) for name, v in parts.items()}
         info["liked_tags_hit"] = sorted(t for t in index.desc_tags[d] if t in tag_w)
         info["rejected_hit"] = sorted(t for t in index.desc_tags[d] if t in rej_tags)
+        info["liked_artist_hit"] = any(artist_key(a) in profile.liked_artists for a in index.artist_names[d])
         items.append(Item(d, float(total[i]), info))
     return items
 
 
-def mmr(index: TermIndex, docs: list[int], scores: np.ndarray, k: int, lam: float) -> list[int]:
-    """Maximal Marginal Relevance (Carbonell & Goldstein, 1998). Returns positions in docs."""
+def mmr(index: TermIndex, docs: list[int], scores: np.ndarray, k: int, lam: float, vectors=None) -> list[int]:
+    """Maximal Marginal Relevance (Carbonell & Goldstein, 1998). Returns positions in docs.
+
+    vectors: embeddings of docs (neural similarity); without them the term vectors are used.
+    """
     if len(docs) == 0:
         return []
     rel = (scores - scores.min()) / (np.ptp(scores) or 1.0)
-    sim = (index.unit[docs] @ index.unit[docs].T).toarray()
+    if vectors is not None:
+        sim = np.asarray(vectors @ vectors.T)
+    else:
+        sim = (index.unit[docs] @ index.unit[docs].T).toarray()
     chosen: list[int] = []
     while len(chosen) < min(k, len(docs)):
         best, best_value = -1, -1e9
@@ -300,18 +333,24 @@ def mmr(index: TermIndex, docs: list[int], scores: np.ndarray, k: int, lam: floa
 def explain(index: TermIndex, item: Item) -> str:
     """Why this track was ranked here, computed from the score components (no LLM involved)."""
     p, reasons = item.parts, []
-    if p.get("rejected", 0) < 0:
-        reasons.append("note: it has " + ", ".join(p["rejected_hit"] or ["an attribute"]) + ", which you rejected")
-    if p.get("liked_artist", 0) > 0:
+    if p.get("liked_artist_hit"):
         reasons.append("by an artist you liked")
-    if p.get("tag_match", 0) > 0 and p["liked_tags_hit"]:
-        reasons.append("matches the styles you like (" + ", ".join(p["liked_tags_hit"][:3]) + ")")
+    if p.get("text", 0) > 0.5:
+        reasons.append("matches what you asked for")
+    if p.get("styles", 0) > 0.5:
+        reasons.append("close to the styles you like")
     if p.get("artist_history", 0) > 0:
         reasons.append("same artist as a song on your playlist")
     elif p.get("album_history", 0) > 0:
         reasons.append("same album as a song on your playlist")
+    if p.get("learned", 0) > 0.5 or p.get("tracks", 0) > 0.5:
+        reasons.append("fits the songs you chose")
+    if p.get("cf", 0) > 0.5:
+        reasons.append("listeners of your songs also play it")
+    if item.parts.get("liked_tags_hit"):
+        reasons.append("styles you like: " + ", ".join(item.parts["liked_tags_hit"][:3]))
     if not reasons:
-        reasons.append("close to the words in your request" if p.get("bm25", 0) > 0.5 else "a popular song that fits")
+        reasons.append("close to your request" if p.get("bm25", 0) > 0.5 else "a popular song that fits")
     return "; ".join(reasons)
 
 

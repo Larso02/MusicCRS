@@ -82,8 +82,8 @@ def test_rocchio_moves_the_query_towards_liked_and_away_from_disliked(ix):
 
 def test_without_feedback_rocchio_leaves_the_query_alone(ix):
     q = ix.text_vector("rock")
-    same = refine_module.refine(ix, "rock", [], Profile(), Config(rocchio=True, rerank=True), k=10)
-    base = refine_module.refine(ix, "rock", [], Profile(), Config(rocchio=False, rerank=False), k=10)
+    same = refine_module.refine(ix, "rock", [], Profile(), Config(rocchio=True, neural=True), k=10)
+    base = refine_module.refine(ix, "rock", [], Profile(), Config(rocchio=False, neural=False), k=10)
     assert [i.idx for i in same] == [i.idx for i in base] and q.nnz == 1
 
 
@@ -111,28 +111,28 @@ def top_share(ix, items, tag):
 
 def test_a_rejected_tag_leaves_the_top_five(ix):
     played = [idx_of(ix, "Lithium", "Nirvana")]
-    base_cfg = Config(rocchio=False, rerank=False)
+    base_cfg = Config(rocchio=False, neural=False)
     base = refine_module.refine(ix, "grunge", played, Profile(), base_cfg, k=20)
     tag = "grunge"
     assert top_share(ix, base, tag) >= 0.6                         # the scenario: grunge dominates
     p = Profile(); p.dislike_tag(tag)
     after = refine_module.refine(ix, "grunge", played, p, Config(), k=20)
     assert top_share(ix, after, tag) < top_share(ix, base, tag) - 0.3     # cut by at least 30 points
-    assert all(i.parts["rejected"] == 0 for i in after[:5] if tag not in ix.desc_tags[i.idx])
+    assert not any(tag in i.parts["rejected_hit"] for i in after[:5])      # none of the top five carries it
 
 
-def test_a_rejected_artist_is_penalised(ix):
+def test_a_rejected_artist_is_removed(ix):
     played = [idx_of(ix, "Lithium", "Nirvana")]
     p = Profile(); p.dislike_artist(artist_key("Nirvana"))
     items = refine_module.refine(ix, "grunge", played, p, Config(), k=10)
-    assert sum("Nirvana" in ix.artist_names[i.idx] for i in items[:5]) <= 1
+    assert not any("Nirvana" in ix.artist_names[i.idx] for i in items)       # a rejection is final
 
 
 def test_a_liked_artist_and_tag_are_rewarded(ix):
     p = Profile(); p.like_artist(artist_key("Coldplay"))
     items = refine_module.refine(ix, "music", [], p, Config(), k=5)
     assert sum("Coldplay" in ix.artist_names[i.idx] for i in items) >= 3
-    assert all(i.parts["liked_artist"] > 0 for i in items if "Coldplay" in ix.artist_names[i.idx])
+    assert all(i.parts["liked_artist_hit"] for i in items if "Coldplay" in ix.artist_names[i.idx])
 
 
 def test_liked_tracks_pull_the_results_their_way(ix):
@@ -140,8 +140,8 @@ def test_liked_tracks_pull_the_results_their_way(ix):
     p = Profile()
     for i in liked:
         p.like_track(ix.ids[i])
-    with_rocchio = refine_module.refine(ix, "songs", [], p, Config(rerank=False), k=10)
-    without = refine_module.refine(ix, "songs", [], p, Config(rocchio=False, rerank=False), k=10)
+    with_rocchio = refine_module.refine(ix, "songs", [], p, Config(neural=False), k=10)
+    without = refine_module.refine(ix, "songs", [], p, Config(rocchio=False, neural=False), k=10)
     gain = lambda items: sum("Coldplay" in ix.artist_names[i.idx] for i in items)
     assert gain(with_rocchio) > gain(without)
 
@@ -171,11 +171,6 @@ def test_explanations_come_from_the_score_components(ix):
     assert all(t for t in texts)
     pearl_jam = [refine_module.explain(ix, i) for i in items if "Pearl Jam" in ix.artist_names[i.idx]]
     assert pearl_jam and all("by an artist you liked" in t for t in pearl_jam)
-
-
-def test_a_rejected_attribute_is_named_in_the_explanation(ix):
-    item = refine_module.Item(0, 1.0, {"bm25": 0.2, "rejected": -2.0, "rejected_hit": ["metal"], "liked_tags_hit": []})
-    assert "metal" in refine_module.explain(ix, item) and "rejected" in refine_module.explain(ix, item)
 
 
 def test_diff_lists():
@@ -281,7 +276,7 @@ def test_the_llm_only_words_the_summary(with_list, chat):
 def test_make_it_more_varied(with_list, chat):
     agent = with_list
     chat("make it more varied", {"action": "feedback", "variety": "more"})
-    assert agent._variety == 0.5
+    assert agent._variety == 0.3
     chat("more of the same", {"action": "recommend", "variety": "less"})
     assert agent._variety == 1.0
 

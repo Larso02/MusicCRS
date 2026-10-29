@@ -22,10 +22,11 @@ from dialoguekit.platforms import FlaskSocketPlatform
 from track_database import TrackDatabase, artist_key, match_tag, norm
 from fuzzy import FuzzyTrackIndex
 from capabilities import help_answer, is_help_request
-from playlist_generator import PlaylistGenerator, warm_up as warm_up_generator
+from playlist_generator import PlaylistGenerator, get_shared, warm_up as warm_up_generator
 from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
 from recommender import Recommender
 from router import Router
+from neural import NeuralScorer
 from refine import Config as RefineConfig, TermIndex, diff_lists, explain, refine
 from user_profile import Profile
 from selection import parse_selection
@@ -66,8 +67,35 @@ def get_term_index(db):
     return _TERM_INDEX
 
 
+_NEURAL = None
+
+
+def get_neural(index: TermIndex):
+    """The neural reranker (trained network + embeddings), loaded once. None if it cannot be loaded,
+    in which case the recommendations use the Part 1 scoring."""
+    global _NEURAL
+    if _NEURAL is None:
+        try:
+            _NEURAL = NeuralScorer.load(index.ids)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Neural reranker unavailable.", exc_info=True)
+            _NEURAL = False
+    return _NEURAL or None
+
+
+def encode_text(text: str):
+    """Embedding of a wish with the same model that embedded the tracks (loaded with the generator)."""
+    try:
+        dense = get_shared()["dense"]
+        dense.warm_up()
+        return dense._encoder(text)
+    except Exception:                       # no model available: the wish then only expands the query
+        return None
+
+
 DEFAULT_VARIETY = 0.8        # MMR lambda for refined recommendations (1.0 = relevance only)
-MORE_VARIETY = 0.5           # after "make it more varied"
+MORE_VARIETY = 0.3           # after "make it more varied" (clearly visible in the neural space)
 _INTENT_OPTIONS = Intent("OPTIONS")
 _INTENT_PLAYLIST = Intent("PLAYLIST_STATE")
 _ADD_RE = re.compile(
@@ -751,7 +779,8 @@ class MusicCRS(Agent):
         played = [index.index[t] for t in self._playlist if t in index.index]
         exclude = [index.index[t] for t in self._recommended if t in index.index] if seen else []
         cfg = replace(RefineConfig(), mmr_lambda=self._variety)
-        items = refine(index, "", played, self._profile, cfg, k=5, exclude=exclude)
+        items = refine(index, "", played, self._profile, cfg, k=5, exclude=exclude,
+                       neural=get_neural(index), encode=encode_text)
         if not items:
             return "I couldn't find more songs that fit."
         by_id = {t["track_id"]: t for t in self._db.get_tracks([index.ids[i.idx] for i in items])}
@@ -1157,7 +1186,7 @@ class MusicCRS(Agent):
 if __name__ == "__main__":
     get_fuzzy_index(TrackDatabase())
     get_recommender(TrackDatabase())
-    get_term_index(TrackDatabase())
+    get_neural(get_term_index(TrackDatabase()))
     warm_up_generator()
     platform = FlaskSocketPlatform(MusicCRS)
     platform.start()
