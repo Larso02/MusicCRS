@@ -163,7 +163,7 @@ class Config:
     # stage 1: Rocchio query modification and BM25 retrieval
     rocchio: bool = True
     alpha: float = 1.0
-    beta: float = 0.7
+    beta: float = 1.2                   # tuned on held-out sessions (experiments/10_refine_eval.py)
     gamma: float = 0.3
     top_terms: int = 40
     K: int = 1000                       # candidates taken from BM25

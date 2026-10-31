@@ -31,6 +31,12 @@ interface PlaylistTrack {
 }
 
 
+interface TasteChip {
+  slot: string;
+  value: string;
+}
+
+
 export default function ChatBox() {
   const { config } = useContext(ConfigContext);
   const { user } = useContext(UserContext);
@@ -47,6 +53,7 @@ export default function ChatBox() {
   const [inputValue, setInputValue] = useState<string>("");
   const [playlist, setPlaylist] = useState<PlaylistTrack[]>([]);
   const [newTrack, setNewTrack] = useState("");
+  const [taste, setTaste] = useState<TasteChip[]>([]);
   const chatMessagesRef = useRef(chatMessages);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -97,6 +104,10 @@ export default function ChatBox() {
         } catch (error) {
           console.error("Invalid playlist state:", error);
         }
+      }
+      const tasteAct = message.dialogue_acts?.find((act) => act.intent === "PROFILE_STATE");
+      if (tasteAct) {
+        setTaste(tasteAct.annotations.map((a) => ({ slot: a.slot, value: a.value })));
       }
       if (!!message.text) {
         const image_url = message.attachments?.find((attachment) => attachment.type === "image")?.payload.images?.[0];
@@ -177,6 +188,7 @@ export default function ChatBox() {
       setChatMessages([]);
       setChatButtons([]);
       setPlaylist([]);
+      setTaste([]);
     });
   }, [onRestart]);
 
@@ -206,6 +218,22 @@ export default function ChatBox() {
             </div>
           </div>
         </MDBCardBody>
+        {taste.length > 0 && (
+          <section className="taste-panel" aria-label="What I have learned about your taste">
+            <div className="taste-header">
+              <strong>Your taste</strong>
+              <button type="button" className="btn btn-sm btn-outline-secondary"
+                onClick={() => sendMessage({ message: "/forget" })}>Forget</button>
+            </div>
+            <div className="taste-chips">
+              {taste.map((chip, index) => (
+                <span key={index} className={`taste-chip taste-${chip.slot}`}>
+                  {chip.slot === "dislike" ? "\u2212 " : "+ "}{chip.value}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
         <section className="playlist-panel" aria-label="Current playlist">
           <div className="playlist-header">
             <strong>My Playlist ({playlist.length})</strong>

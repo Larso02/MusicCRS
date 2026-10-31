@@ -76,7 +76,8 @@ CAPABILITIES = {
             "Tell me what you think of the suggestions: <i>I like the first two but the others are too heavy</i>, "
             "<i>no more Coldplay</i>, <i>more alternative rock</i> or <i>make it more varied</i>. "
             "I remember it during the chat and say what changed. Adding a suggested song counts as a like, "
-            "removing one as a dislike."
+            "removing one as a dislike. Ask <i>what do you know about my taste?</i> to see what I learned, "
+            "<i>why did you suggest the second one?</i> for the reason, or <i>forget my preferences</i> to reset."
         ),
     },
     "generate": {
