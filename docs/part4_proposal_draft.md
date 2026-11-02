@@ -1,34 +1,34 @@
-# Part 4 proposal draft (v3, after second lecturer feedback)
+# Part 4 proposal draft (v4, after the third lecturer feedback)
 
 ## Text for Canvas (under 300 words)
 
 Feedback-aware playlist refinement
 
-Idea. Users refine recommendations conversationally ("I like the first two, but too heavy; make it more varied"). One LLM call turns each feedback sentence into structured positives and negatives (tracks, artists, tags), kept in a session profile. Two stages then build on our Part 1 BM25 retriever:
-1. Rocchio relevance feedback (Rocchio, 1971) modifies the query: q' = αq + β·mean(liked) − γ·mean(disliked), over title, artist, album and tag terms. BM25 retrieves candidates for q'.
-2. A feedback-aware reranker rescores the top-1000 candidates using BM25 for q', tag overlap with liked tags, artist/album match, and a penalty for rejected artists and tags; weights tuned on train sessions.
-Maximal Marginal Relevance (Carbonell & Goldstein, 1998) then diversifies the list; "more varied" sets its strength. Adding or removing a recommended track gives implicit feedback.
+Idea. Users refine recommendations conversationally ("I like the first two, but too heavy; make it more varied"). One LLM call turns each feedback sentence into structured positives and negatives (tracks, artists, styles), kept in a session profile. Three stages build on our Part 1 BM25 retriever:
+1. Rocchio relevance feedback (Rocchio, 1971) modifies the query: q' = αq + β·mean(liked) − γ·mean(disliked). BM25 retrieves the top 1000 candidates for q'.
+2. A neural reranker rescores them: a two-tower network trained on TalkPlay sessions over the challenge's Qwen3 metadata and collaborative-filtering embeddings. Liked styles enter as prototypes (mean embedding of tracks with the tag), wishes as text embeddings, rejected songs and styles as penalties. Explicitly rejected artists and styles are removed as a constraint.
+3. Maximal Marginal Relevance (Carbonell & Goldstein, 1998) diversifies the list; "more varied" sets its strength. Adding or removing a recommended track is implicit feedback.
 
-Evaluation. Offline on TalkPlay train sessions (previously played tracks as implicit feedback): nDCG@20 for Part 1 alone, Rocchio only, reranking only and both. Scripted scenarios measure rejected attributes in the top 5, intra-list diversity and parsing accuracy.
+Evaluation. Offline on held-out TalkPlay sessions: nDCG@20 for Part 1 scoring, Rocchio, neural reranker and both (ablation); scenarios for rejected attributes, requested styles, diversity, parsing accuracy.
 
-General condition: responses within 3-5 s; ranking uses no LLM; at most 3 LLM calls per turn.
+General condition: responses within 3-5 s; ranking needs no LLM; at most 3 LLM calls per turn.
 
 | Planned feature | Points |
 |---|---|
-| Parse positive/negative feedback via LLM; at least 85% correct on 30 sentences | 2 |
+| Parse feedback via LLM; at least 85% correct on 30 sentences | 2 |
 | Session preference profile updated over several turns | 2 |
-| Rocchio query modification and BM25-and-tag reranking; rejected-attribute rate in top-5 cut by at least 30% while keeping relevance | 4 |
+| Rocchio query modification and trained neural reranking; rejected-attribute rate in top-5 cut by at least 30% while keeping relevance | 4 |
 | MMR diversity with user-controlled strength | 2 |
 | Implicit feedback from playlist add/remove | 1 |
-| Grounded explanations computed from score components plus before/after list diff | 2 |
-| Evaluation vs. Part 1 baseline with ablation (nDCG@20, rejected-attribute rate, diversity) | 2 |
+| Grounded explanations from score components plus before/after diff | 2 |
+| Evaluation vs. Part 1 baseline with ablation | 2 |
 | Total | 15 |
 
 ---
 
 ## Background (not for Canvas)
 
-### Lecturer feedback and how v3 answers it
+### Lecturer feedback and how v4 answers it
 | Feedback | Change |
 |---|---|
 | (v2) Rocchio goal quite ambitious | Threshold softened from 50% to 30% rejected-attribute reduction. |
@@ -36,14 +36,16 @@ General condition: responses within 3-5 s; ranking uses no LLM; at most 3 LLM ca
 | (v2) Add one more small 1p task | Implicit feedback from playlist actions. |
 | (v2) Latency should be a general condition | Stated as a general condition, not a table row. |
 | (v2) Explanations: add value beyond asking the LLM | Explanations are computed from score components plus a before/after diff. |
-| (v3) "Rocchio is not reranking" | Rocchio is now described as what it is: query modification before retrieval. It is no longer called re-ranking. |
-| (v3) Implement both reranking with BM25 and tags, and Rocchio, for 4p | The 4p row now contains both: Rocchio query modification, plus a separate reranking stage over the retrieved candidates using BM25 and tag scores. The ablation in the evaluation row shows what each part contributes. |
+| (v3) "Rocchio is not reranking" | Rocchio is described as query modification before retrieval. |
+| (v3) Rerank with BM25 and tags, and Rocchio | (replaced in v4, see below) |
+| (v4) "BM25 is not used for reranking; tag reranking does not make sense; reranking needs a neural method, tags may be added" | The reranker is now a **trained neural network** (two-tower, Qwen3 metadata + collaborative-filtering embeddings). BM25 only retrieves candidates (with the Rocchio query). Tags are no longer counted: a liked tag selects the tracks whose mean embedding forms a style prototype, which the network space scores by cosine similarity. Explicit rejections are a constraint, not a score. |
 
-### How the two stages fit together
-- Rocchio changes **what is retrieved** (the query vector q'); the reranker changes **the order of what was retrieved** (scoring the top-K, K = 1000 as in Part 1). They are separate components with separate tests.
-- Both use the same profile (liked and rejected tracks, artists, tags), so one feedback sentence updates both.
-- Tags come from `tag_list`. The tags are noisy user tags, so only descriptive ones should be used (drop opinion tags such as "favorites", single years and the artist's own name, and tags used by fewer than 5 tracks). A tested version of this filter exists but is not merged into the Part 2 code yet.
-- Optional extension, only if time remains: add the TalkPlay metadata embedding as a fourth reranking signal. It is not promised in the table.
+### How the stages fit together
+- Rocchio changes **what is retrieved** (the BM25 query vector q'); the neural reranker changes **the order of what was retrieved** (the top K = 1000 candidates). They are separate components with separate tests.
+- The neural reranker (`musiccrs/neural.py`, `musiccrs/reranker_model.py`) is a two-tower network trained by `scripts/train_reranker.py` on 90% of the TalkPlay training sessions (history of played tracks -> next track, sampled softmax). Inputs: the Qwen3 metadata embedding (1024-d) and the BPR collaborative-filtering embedding (128-d) that the challenge data provides. The other 10% of the sessions are held out for the evaluation.
+- Profile effects in the reranker: liked and played songs form the history; liked tags become style prototypes (mean embedding of the tracks with the tag, scored in the trained space); wishes that match no tag are embedded as text with the same Qwen3 model; rejected songs and styles are penalties; explicitly rejected artists and styles are removed from the candidates (constraint).
+- Priors from Part 1 that are neither BM25 nor tags (same artist/album as the playlist, popularity) can be added; the ablation shows whether they help.
+- MMR uses cosine similarity in the trained space.
 
 ### Why this proposal
 - Relevance feedback (Rocchio) is course material, same family as the RM3 pseudo-relevance feedback in assignment A9; MMR is a standard citable diversity method.
@@ -57,11 +59,11 @@ General condition: responses within 3-5 s; ranking uses no LLM; at most 3 LLM ca
 
 ### Notes for implementation
 - No "genre" field exists: use `tag_list`.
-- Rocchio on sparse vectors: represent each track as TF-IDF over its title/artist/album/tag terms (the same terms the BM25 index uses); q' keeps only the top terms by weight and clips negative weights to zero, since BM25 cannot score negative query weights. The negative part is therefore applied mainly in the reranker (rejected penalty).
+- Rocchio on sparse vectors: represent each track as TF-IDF over its title/artist/album/tag terms (the same terms the BM25 index uses); q' keeps only the top terms by weight and clips negative weights to zero, since BM25 cannot score negative query weights. The negative part is therefore applied in the neural reranker (penalty) and as a constraint.
 - Implicit feedback needs the playlist actions to carry the recommended track ids (the Part 2 playlist already stores `track_id`).
-- Explanations: log per-track score components (BM25 term, tag match, artist/album match, penalty, MMR term) so reasons are real, not generated.
+- Explanations: log per-track score components (trained network, style prototype, wish text, artist/album prior) so reasons are real, not generated.
 - Start collecting the 30 labelled feedback sentences and 5-10 scenarios now.
-- Priority if time is short: keep Rocchio + reranker + profile + evaluation; drop MMR strength parsing and the list diff first.
+- Priority if time is short: keep Rocchio + neural reranker + profile + evaluation; drop MMR strength parsing and the list diff first.
 
 ### References for the Canvas text
 - Rocchio, J. J. (1971). Relevance feedback in information retrieval. In *The SMART Retrieval System*, pp. 313-323. Prentice-Hall.
