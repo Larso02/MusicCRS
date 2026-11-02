@@ -21,78 +21,61 @@
   flex-direction: column-reverse;
  }
 
- /* R1 playlist controls */
-
-.playlist-panel {
-  padding: 12px 16px;
-  border-top: 1px solid #e5e7eb;
-  background: #fafafa;
+/* Two columns: the chat on the left, playlist and song search on the right */
+.musiccrs-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
+  gap: 16px;
+  align-items: stretch;
+  height: calc(100vh - 64px);
+  min-height: 520px;
+  padding: 12px;
 }
 
-.playlist-header,
-.playlist-item,
-.playlist-add {
+.musiccrs-layout .chat-column,
+.musiccrs-layout .chat-widget-card {
+  height: 100%;
+}
+
+.musiccrs-layout .chat-widget-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08);
 }
 
-.playlist-header {
-  margin-bottom: 8px;
+.musiccrs-layout .chat-widget-content .card-body {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
 }
 
-.playlist-items {
-  max-height: 170px;
-  overflow-y: auto;
+/* narrow screens and the floating widget: one column, the lists below the chat */
+@media (max-width: 900px) {
+  .musiccrs-layout {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+
+  .musiccrs-layout .chat-column {
+    height: 70vh;
+  }
+
+  .musiccrs-layout .side-panel {
+    height: 70vh;
+  }
 }
 
-.playlist-item {
-  padding: 5px 0;
-  border-bottom: 1px solid #eee;
+.musiccrs-layout.compact {
+  display: block;
+  height: auto;
+  padding: 0;
 }
 
-.playlist-item span {
-  overflow-wrap: anywhere;
+.musiccrs-layout.compact .chat-widget-content .card-body {
+  max-height: 350px;
 }
 
-.playlist-add {
-  margin-top: 10px;
-}
-
-/* Part 4: what the system has learned about the user's taste */
-.taste-panel {
-  padding: 8px 16px;
-  border-top: 1px solid #e5e7eb;
-  background: #f7fbf8;
-}
-
-.taste-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-
-.taste-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.taste-chip {
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 0.85rem;
-  overflow-wrap: anywhere;
-}
-
-.taste-like {
-  background: #e3f4e8;
-  color: #1b5e30;
-}
-
-.taste-dislike {
-  background: #fbe5e5;
-  color: #8a1f1f;
+.musiccrs-layout.compact .side-panel {
+  height: 420px;
+  margin-top: 12px;
 }

@@ -18,6 +18,7 @@ lives in `part2_summary.md` (requirements R1-R8), `part4_results.md` (Part 4 num
 | `questions.py` | rule-based recognition of questions about songs/artists | R5 fallback when the LLM is off |
 | `selection.py` | rule-based "the first two", "all except 2" | R7 fallback |
 | `capabilities.py` | the feature list behind the help text | R3; help can never advertise a missing feature |
+| `search_api.py` | `GET /search`: search the whole catalog while typing (with a typo fallback) | the UI's search box must answer on every keystroke without adding chat messages |
 | `recommender.py` | "recommend" from the playlist (Part 1 features + tags + year) | R6 |
 | `playlist_generator.py` | a whole playlist from a description (LLM keywords, BM25 + embeddings, duration) | R8 |
 | `user_profile.py` | what the user liked and rejected during the chat | Part 4 session preference profile |
@@ -35,7 +36,7 @@ lives in `part2_summary.md` (requirements R1-R8), `part4_results.md` (Part 4 num
 | `scripts/eval_feedback.py` | three sets of 30 feedback sentences against the real LLM |
 | `scripts/transcribe.py` | local Whisper transcription of the Part 3 interview recordings |
 | `experiments/00-09` | Part 1 and feasibility experiments; `10_refine_eval.py` is the Part 4 evaluation |
-| `frontend/.../ChatBox.tsx` | chat, playlist panel (add/remove/clear), taste chips with a Forget button |
+| `frontend/.../ChatBox.tsx` | the chat (left column); `SidePanel/SidePanel.tsx` is the right column: taste chips with a Forget button, the playlist with a filter box and Remove/Clear, and "Find songs" (search all songs, Add button) |
 
 ## 2. How a message is handled now
 1. `/commands` (the UI buttons) and clicks on option buttons skip the LLM: they are exact.
@@ -124,6 +125,27 @@ lives in `part2_summary.md` (requirements R1-R8), `part4_results.md` (Part 4 num
 - **Transparency** (added last): the UI shows taste chips with a Forget button; the chat answers "what do you
   know about my taste?", "forget my preferences" and "why did you suggest X?" from stored facts.
 
+### Web UI: two columns, playlist filter and catalog search (added after Part 4)
+- Why: adding a song used to mean typing its name into a box or into the chat, with no way to look around the
+  catalog, and the playlist panel sat under the chat where it was hard to see. Now the chat is the left column and
+  the right column holds the taste chips, the playlist and a song search, so the playlist is always in view.
+- **Playlist filter**: client-side, every word must occur in title, artist or album; songs keep their real number
+  so "remove number 7" still matches what the user sees. Clear asks for confirmation when there is more than one song.
+- **Catalog search**: `GET /search?q=...` on the same Flask app as the socket. Why a plain route and not the chat
+  socket: a search box needs an answer on every keystroke, and sending each one as a chat message would fill the
+  conversation. The UI waits 250 ms after the last key and drops answers to outdated queries.
+- **How it searches** (`TrackDatabase.search_catalog`): every word must occur in the title or artist (so
+  "yellow coldplay" and "coldplay yellow" both work, and partial words work while typing); exact title first,
+  then titles that start with the text, then by popularity. Case, accents and punctuation do not matter.
+- **Typos**: the fuzzy index is used only when nothing matches exactly ("stnad by me" -> Stand By Me). In the first
+  version close spellings were also added after real matches and padded "yellow coldplay" with songs that do not
+  contain "yellow"; fuzzy guesses are now offered only instead of an empty result, with a minimum similarity of 0.7.
+- **Adding from the UI** sends `/add <track id>`, the same exact command as before, so a click can never pick the
+  wrong song. A song already on the playlist shows "In playlist" instead of an Add button; with no result the user
+  can still send the text to the chat's fuzzy add ("Try adding it by name").
+- Narrow screens and the floating widget get one column (chat, then the lists below).
+- Not changed: the chat itself, the router and all recommendation logic.
+
 ### Part 3 interviews
 - Recorded on a phone, transcribed locally with Whisper (`transcribe.py`, no cloud upload), names replaced by
   `[NAME]`. Forcing the language (English) fixed a poor first pass that had detected Norwegian. Recordings and
@@ -159,7 +181,7 @@ lives in `part2_summary.md` (requirements R1-R8), `part4_results.md` (Part 4 num
   0.247 -> 0.305. MMR lambda 0.4: diversity 0.265 -> 0.302.
 - **Latency**: router 0.5 s; a feedback turn (two LLM calls) 1.0-2.9 s; a generated playlist about 2 s; server
   start 40-60 s.
-- **Tests**: 561 automated tests (section 9).
+- **Tests**: 587 automated Python tests (section 9) and 16 frontend tests.
 
 ## 6. Feedback timeline and our response
 | When | Feedback | What we did |
@@ -193,11 +215,12 @@ python -m scripts.train_reranker                 # (optional) retrain -> data/re
 python experiments/10_refine_eval.py --turns 1500 --scenarios 400 --tune     # Part 4 numbers, about 1 hour
 python -m scripts.eval_router                    # router accuracy (needs MY_OLLAMA_API_KEY)
 python -m scripts.eval_feedback --set fresh      # feedback parsing; also --set tuned / heldout
-python -m pytest -q                              # 561 tests
+python -m pytest -q                              # 587 tests
+cd frontend && npx tsc --noEmit -p . && CI=true npx react-scripts test --watchAll=false   # frontend: types and 16 tests
 python musiccrs/musiccrs.py                      # backend; frontend: cd frontend && npm start
 ```
 
-## 9. Test inventory (561)
+## 9. Test inventory (587 Python tests + 16 frontend tests)
 | File | Tests | Covers |
 |---|---|---|
 | test_agent.py | 17 | basic agent behaviour, quit, playlist state |
@@ -215,4 +238,11 @@ python musiccrs/musiccrs.py                      # backend; frontend: cd fronten
 | test_refine.py | 35 | profile, Rocchio, constraint, MMR, explanations, feedback flow |
 | test_neural.py | 19 | embeddings, style prototypes, the trained network, held-out rule |
 | test_transparency.py | 22 | taste chips, preferences, forget, why |
+| test_search.py | 26 | catalog search: ranking, words in any order, typos, limits, SQL safety, speed, the HTTP route |
+| frontend/src/tests/SidePanel.test.tsx | 16 | playlist filter, Remove/Clear, search with delay and errors, Add, taste chips |
 | test_eval_feedback.py | 7 | the feedback-evaluation checker and the integrity of its three sets |
+
+Frontend test note: `npm test` first failed with a Babel version error that was already in the project (the installed
+`@babel/core` 7.20 is older than another package needs). The tests were run after `npm install --no-save @babel/core@7.24.0`,
+which changes nothing in `package.json` or the lock file; on another machine, run the same command if `npm test` fails
+with "Requires Babel ^7.22.0".

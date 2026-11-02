@@ -27,6 +27,7 @@ from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
 from recommender import Recommender
 from router import Router
 from neural import NeuralScorer
+from search_api import register_search
 from refine import Config as RefineConfig, TermIndex, diff_lists, explain, refine
 from user_profile import Profile
 from selection import parse_selection
@@ -1282,4 +1283,5 @@ if __name__ == "__main__":
     get_neural(get_term_index(TrackDatabase()))
     warm_up_generator()
     platform = FlaskSocketPlatform(MusicCRS)
+    register_search(platform.app, TrackDatabase(), get_fuzzy_index(TrackDatabase()))     # the UI's search boxes
     platform.start()

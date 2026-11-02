@@ -33,3 +33,16 @@ export type AgentMessage = {
 export type UserMessage = {
   message: string;
 };
+
+export type PlaylistTrack = {
+  track_id: string;
+  track_name: string;
+  artist_name: string[];
+  album_name: string[];
+  popularity: number;
+};
+
+export type TasteChip = {
+  slot: string;      // "like" or "dislike"
+  value: string;
+};

@@ -15,7 +15,7 @@ decided between them, and the reason for the choice. Shorter, more technical com
 2. Part 1: retrieval (item ranking)
 3. Part 2: the chat system, requirement by requirement
 4. The LLM-first redesign
-5. Tags: from a stop list to an LLM judgement
+5. Tags: from a stop list to an LLM judgement (and 5b, the web UI)
 6. Part 3: the interviews
 7. Part 4: feedback-aware refinement (all iterations)
 8. How we evaluated, and how we kept the evaluation honest
@@ -35,7 +35,7 @@ MusicCRS is a conversational music recommender: a web chat where the user builds
 | Part | Goal | Outcome |
 |---|---|---|
 | 1 | rank the catalog for a conversation turn (batch retrieval) | score 0.2857 against the target 0.22 and the BM25 baseline 0.1446 |
-| 2 | a chat system for playlists, questions, recommendations, selection, generation (R1-R8) | all eight requirements; 561 automated tests |
+| 2 | a chat system for playlists, questions, recommendations, selection, generation (R1-R8) | all eight requirements; 587 automated Python tests and 16 frontend tests |
 | 3 | evaluate other groups' systems by interview | two interviews recorded and transcribed locally |
 | 4 | advanced feature: feedback-aware refinement | profile + Rocchio + trained neural reranker + MMR + explanations |
 
@@ -232,6 +232,36 @@ names and other cues that help when a user names an artist.
 
 ---
 
+## 5b. The web UI: two columns, playlist filter and catalog search
+
+Added after Part 4 so the demo is easier to use.
+
+| Before | Now | Why |
+|---|---|---|
+| the playlist under the chat in a half-width box | chat on the left, the playlist, taste chips and song search in a right column | the playlist is always in view; the whole width is used |
+| an Add box that took text ("title by artist") | **Find songs**: search the whole catalog while typing, Add button per song | no need to know the exact title; shows which version (artist, album) you add |
+| a long playlist could only be read by scrolling | a **filter box** inside the playlist | find a song in a long list |
+| Clear removed everything at once | Clear asks first when there is more than one song | a misclick used to lose the whole playlist |
+
+Decisions and reasons:
+- **A plain `/search` HTTP route instead of the chat socket.** A search box answers on every keystroke; sending each
+  one as a chat message would fill the conversation. The route sits on the same Flask app as the socket.
+- **250 ms pause and cancelled requests.** The UI searches after the last key and ignores answers to outdated
+  queries, so fast typing does not flood the server or show stale results.
+- **Ranking:** every word must occur in the title or the artist, in any order; exact title first, then titles that
+  start with the text, then popularity. "yellow coldplay" and "coldplay yellow" give the same list.
+- **Typos only instead of nothing.** The fuzzy index offers "Stand By Me" for "stnad by me", but only when nothing
+  matches exactly. The first version added close spellings after real matches and padded "yellow coldplay" with
+  songs that do not contain "yellow"; seen in the browser, fixed, and covered by a test.
+- **Add sends the track id** (`/add <id>`): a click can never pick a different song with the same title, and it goes
+  through the same code as the chat.
+- **Songs keep their real number under the filter,** so what the user sees matches "remove number 7".
+- **Narrow screens / widget:** one column. Checked in a browser at desktop and 700 px width.
+- Verified by 26 backend tests (ranking, typos, SQL safety, speed, the HTTP route) and 16 frontend tests (filter, delayed
+  search, Add/Remove commands, empty and error states, taste chips), plus a manual run in the browser.
+- Known issue found on the way: the frontend's Jest setup was already broken by a Babel version mismatch (see the note
+  at the end of `implementation_log.md`).
+
 ## 6. Part 3: the interviews
 
 - Two interviews (21 and 14 minutes), recorded on a phone, with verbal consent.
@@ -424,6 +454,7 @@ python -m scripts.train_reranker                 # (optional) retrain -> data/re
 python experiments/10_refine_eval.py --turns 1500 --scenarios 400 --tune     # Part 4 numbers, about 1 hour
 python -m scripts.eval_router                    # router accuracy (needs MY_OLLAMA_API_KEY)
 python -m scripts.eval_feedback --set fresh      # feedback parsing; also --set tuned / heldout
-python -m pytest -q                              # 561 tests
+python -m pytest -q                              # 587 tests
+cd frontend && CI=true npx react-scripts test --watchAll=false   # 16 frontend tests
 python musiccrs/musiccrs.py                      # backend; frontend: cd frontend && npm start
 ```

@@ -183,6 +183,27 @@ class TrackDatabase:
 
         return results[:limit]
 
+    def search_catalog(self, text, limit=15):
+        """Search the whole catalog as you type: every word of the text must occur in the title or the artist.
+
+        Best first: the title is exactly the text, then the title starts with it, then by popularity.
+        """
+        words = norm(text).split()[:6]
+        if not words:
+            return []
+        where = " AND ".join("(title_norm LIKE ? OR artist_norm LIKE ?)" for _ in words)
+        params: list = []
+        for word in words:
+            params += [f"%{word}%", f"%{word}%"]
+        phrase = " ".join(words)
+        sql = (
+            f"SELECT * FROM tracks WHERE {where} "
+            "ORDER BY (title_norm = ?) DESC, (title_norm LIKE ?) DESC, popularity DESC LIMIT ?"
+        )
+        with closing(self._connect()) as conn:
+            rows = conn.execute(sql, params + [phrase, f"{phrase}%", limit]).fetchall()
+        return [self._format_track(r) for r in rows]
+
     def find_tracks(self, text, limit=10):
         text = text.strip()
         hits = self.search_tracks(text, limit=limit)
