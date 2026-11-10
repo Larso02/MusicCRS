@@ -28,3 +28,4 @@ dist/
 # Generated track database
 data/*
 !data/tag_labels.json
+!data/reranker.pt

@@ -1,6 +1,7 @@
 
 """MusicCRS conversational agent."""
 import html
+from dataclasses import replace
 import json
 import os
 import re
@@ -18,13 +19,17 @@ from dialoguekit.participant.agent import Agent
 from dialoguekit.participant.participant import DialogueParticipant
 from dialoguekit.platforms import FlaskSocketPlatform
 
-from track_database import TrackDatabase, norm
+from track_database import TrackDatabase, artist_key, match_tag, norm
 from fuzzy import FuzzyTrackIndex
 from capabilities import help_answer, is_help_request
-from playlist_generator import PlaylistGenerator, warm_up as warm_up_generator
+from playlist_generator import PlaylistGenerator, get_shared, warm_up as warm_up_generator
 from questions import ARTIST_KINDS, IT_WORDS, Question, parse_question
 from recommender import Recommender
 from router import Router
+from neural import NeuralScorer
+from search_api import register_search
+from refine import Config as RefineConfig, TermIndex, diff_lists, explain, refine
+from user_profile import Profile
 from selection import parse_selection
 
 load_dotenv()
@@ -52,8 +57,49 @@ def get_recommender(db):
         _RECOMMENDER = Recommender(db.db_path)
     return _RECOMMENDER
 
+_TERM_INDEX = None
+
+
+def get_term_index(db):
+    """The catalog as weighted term vectors for Rocchio, the reranker and MMR (built once, about 12 s)."""
+    global _TERM_INDEX
+    if _TERM_INDEX is None:
+        _TERM_INDEX = TermIndex(db.db_path)
+    return _TERM_INDEX
+
+
+_NEURAL = None
+
+
+def get_neural(index: TermIndex):
+    """The neural reranker (trained network + embeddings), loaded once. None if it cannot be loaded,
+    in which case the recommendations use the Part 1 scoring."""
+    global _NEURAL
+    if _NEURAL is None:
+        try:
+            _NEURAL = NeuralScorer.load(index.ids)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Neural reranker unavailable.", exc_info=True)
+            _NEURAL = False
+    return _NEURAL or None
+
+
+def encode_text(text: str):
+    """Embedding of a wish with the same model that embedded the tracks (loaded with the generator)."""
+    try:
+        dense = get_shared()["dense"]
+        dense.warm_up()
+        return dense._encoder(text)
+    except Exception:                       # no model available: the wish then only expands the query
+        return None
+
+
+DEFAULT_VARIETY = 0.8        # MMR lambda for refined recommendations (1.0 = relevance only)
+MORE_VARIETY = 0.3           # after "make it more varied" (clearly visible in the neural space)
 _INTENT_OPTIONS = Intent("OPTIONS")
 _INTENT_PLAYLIST = Intent("PLAYLIST_STATE")
+_INTENT_PROFILE = Intent("PROFILE_STATE")
 _ADD_RE = re.compile(
     r"^(?:/add\s+|(?:please\s+)?(?:add|put|queue)\s+(?:the\s+(?:song|track|)\s+)?)"
     r"(?P<q>.+?)(?:\s+(?:to|on|in|into)\s+(?:my|the)\s+(?:play ?list|queue))?\s*$",
@@ -124,6 +170,14 @@ _CLEAR_RE = re.compile(
     re.I,
 )
 
+_PREFS_RE = re.compile(
+    r"^(?:/preferences|(?:what|show me what) (?:do you know|have you learned)(?: about)? (?:my taste|me|my preferences)"
+    r"|(?:show|view|what are) my (?:preferences|taste))\s*[?.!]*$", re.I)
+_FORGET_RE = re.compile(
+    r"^(?:/forget|(?:please )?(?:forget|reset|clear) (?:my |all )?(?:preferences|taste|likes and dislikes))\s*[?.!]*$", re.I)
+_WHY_RE = re.compile(
+    r"^why\b.*\b(?:recommend(?:ed)?|suggest(?:ed)?|picked?|chose|show(?:ed)?)\b\s*(?P<q>.*?)\s*[?.!]*$", re.I)
+
 _ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10}
 _CANCEL = {"cancel", "no", "none", "neither", "nevermind", "never mind", "skip", "no thanks", "no thank you", "nope", "not now", "not this time", "stop", "quit", "exit", "leave", "dismiss", "forget it", "forget about it", "forget that", "forget this", "forget it all", "forget everything", "forget all of this", "forget everything I said", "forget everything I just said", "forget everything I just told you", "forget everything I just told you about my playlist", "forget everything I just told you about my music preferences"}
 _FILLER = {"the", "one", "ones", "please", "i", "want", "pick", "choose", "select", "take", "song", "track", "by", "a", "with", "number", "option", "it", "that", "go", "for", "me", "my", "to", "in", "on", "of", "and", "or", "but", "so", "if", "then", "else", "when", "where", "how", "what", "which", "who", "whom", "whose", "why", "because", "since", "although", "though", "even though"}
@@ -158,7 +212,10 @@ class MusicCRS(Agent):
         self._pending_multi = False
         self._last_track: dict | None = None
         self._recommended: list[str] = []
-        self._feedback: list[dict] = []           # opinions from the LLM, input for Part 4
+        self._profile = Profile()                 # what the user liked and rejected (Part 4)
+        self._last_recs: list[dict] = []          # the songs suggested last, for "the second one" in feedback
+        self._reasons: dict[str, str] = {}        # track id -> why it was suggested (from the score components)
+        self._variety = DEFAULT_VARIETY
 
     def welcome(self) -> None:
         """Send the agent's welcome message."""
@@ -198,16 +255,84 @@ class MusicCRS(Agent):
             ],
         )
 
+    # --------------------------------------------------
+    # Part 4: what the system has learned, and why it suggested a song
+    # --------------------------------------------------
+
+    def _profile_items(self) -> list[tuple[str, str]]:
+        """The profile as (slot, text) pairs: slot 'like' or 'dislike'. Shown as chips in the UI."""
+        p, index = self._profile, _TERM_INDEX
+
+        def artist(key: str) -> str:
+            return (index.artist_name(key) if index else "") or key
+
+        items: list[tuple[str, str]] = []
+        for slot, tracks, artists, tags in (("like", p.liked_tracks, p.liked_artists, p.liked_tags),
+                                            ("dislike", p.disliked_tracks, p.disliked_artists, p.disliked_tags)):
+            items += [(slot, self._plain_label(t)) for t in self._db.get_tracks(tracks[-5:])]
+            items += [(slot, artist(a)) for a in sorted(artists)]
+            items += [(slot, tag) for tag in sorted(tags)]
+        items += [("like", wish) for wish in p.wishes]
+        return items[:16]
+
+    def _profile_act(self) -> DialogueAct:
+        return DialogueAct(
+            intent=_INTENT_PROFILE,
+            annotations=[SlotValueAnnotation(slot, text) for slot, text in self._profile_items()],
+        )
+
+    def _show_preferences(self) -> str:
+        items = self._profile_items()
+        if not items:
+            return ("I haven't learned anything about your taste yet. Tell me what you think of my suggestions, "
+                    "for example <i>I like the first two but the others are too heavy</i>.")
+        likes = [text for slot, text in items if slot == "like"]
+        dislikes = [text for slot, text in items if slot == "dislike"]
+        parts = []
+        if likes:
+            parts.append("you like " + html.escape(", ".join(likes)))
+        if dislikes:
+            parts.append("you don't want " + html.escape(", ".join(dislikes)))
+        return "What I have learned so far: " + "; ".join(parts) + ". Say <i>forget my preferences</i> to start over."
+
+    def _forget_preferences(self) -> str:
+        self._profile.clear()
+        self._reasons.clear()
+        return "I have forgotten your preferences. Your playlist is unchanged."
+
+    def _why(self, subject: str) -> str:
+        """Why a song was suggested, taken from the stored score components (no LLM involved)."""
+        words = [w for w in norm(subject).split() if w not in _FILLER and w not in {"these", "those", "them", "songs"}]
+        if not words:                              # about the whole list
+            if not self._last_recs:
+                return "I haven't suggested anything yet. Say <i>recommend something</i> first."
+            lines = [f"{self._track_label(t)}: {html.escape(self._reasons.get(t['track_id'], 'it fits your playlist'))}"
+                     for t in self._last_recs]
+            return "Why I suggested these:<br>" + "<br>".join(lines)
+        for track in self._last_recs + self._playlist_tracks():
+            if set(words) <= set(norm(track["track_name"] + " " + " ".join(track["artist_name"])).split()):
+                if track["track_id"] in self._reasons:
+                    return (f"I suggested <b>{self._track_label(track)}</b>. Reason: "
+                            f"{html.escape(self._reasons[track['track_id']])}.")
+                return f"<b>{self._track_label(track)}</b> is on your playlist, but I didn't suggest it."
+        return f"I didn't suggest '{html.escape(subject)}'."
+
     def _fuzzy_guesses(self, query: str) -> list[tuple[dict, float]]:
         found = get_fuzzy_index(self._db).search(query, k=5)
         tracks = {t["track_id"]: t for t in self._db.get_tracks([i for i, _ in found])}
         return [(tracks[i], sim) for i, sim in found if i in tracks]
+
+    def _implicit(self, track_id: str, liked: bool) -> None:
+        """Playlist actions are feedback: adding a suggested song likes it, removing one rejects it."""
+        if track_id in self._recommended:
+            (self._profile.like_track if liked else self._profile.dislike_track)(track_id)
 
     def _add_chosen(self, track:dict, note: str="") -> str:
         self._last_track = track
         if track["track_id"] in self._playlist:
             return f"{self._track_label(track)} is already in your playlist."
         self._playlist.append(track["track_id"])
+        self._implicit(track["track_id"], liked=True)
         return f"Added {self._track_label(track)} to your playlist.{note}"
 
     @staticmethod
@@ -297,6 +422,7 @@ class MusicCRS(Agent):
                 skipped.append(track)
             else:
                 self._playlist.append(track["track_id"])
+                self._implicit(track["track_id"], liked=True)
                 added.append(track)
         if tracks:
             self._last_track = tracks[-1]
@@ -408,6 +534,7 @@ class MusicCRS(Agent):
     def _remove_chosen(self, track: dict, note: str="") -> str:
         if track["track_id"] in self._playlist:
             self._playlist.remove(track["track_id"])
+            self._implicit(track["track_id"], liked=False)
         return f"Removed {self._track_label(track)}.{note}"
         
     def _remove_track(self, query: str) -> str:
@@ -423,6 +550,7 @@ class MusicCRS(Agent):
         if query in self._playlist:
             track = self._db.get_track(query)
             self._playlist.remove(query)
+            self._implicit(query, liked=False)
 
             return f"Removed {self._track_label(track)}." if track else "Removed track."
 
@@ -456,6 +584,7 @@ class MusicCRS(Agent):
 
         track = matches[0]
         self._playlist.remove(track["track_id"])
+        self._implicit(track["track_id"], liked=False)
 
         return (
             f"Removed {self._track_label(track)}."
@@ -681,21 +810,156 @@ class MusicCRS(Agent):
             return "Okay, I'll keep your current playlist."
         return None
 
-    def _recommend(self) -> str:
-        if not self._playlist:
+    def _recommend(self, hint: str = "", variety: str = "") -> str:
+        if variety:
+            self._set_variety(variety)
+        if hint:
+            self._profile.add_wish(hint)          # "something more mellow" is a stated wish
+        if not self._playlist and self._profile.is_empty():
             return(
                 "Your playlist is empty, so I have nothing to base a recommendation on. "
                 "Add a few songs first, for example: <i>add Yellow by Coldplay</i>."
             )
+        if not self._profile.is_empty() or variety:
+            return self._refined_recommendation("Based on your playlist and what you told me:", seen=True)
+
         picks = get_recommender(self._db).recommend(self._playlist, k=5, skip=self._recommended)
         tracks = {t["track_id"]: t for t in self._db.get_tracks([i for i, _ in picks])}
         picks = [(i, why) for i, why in picks if i in tracks]
         if not picks:
             return "I couldn't find more songs that fit your playlist."
         self._recommended.extend(i for i, _ in picks)
+        self._last_recs = [tracks[i] for i, _ in picks]
+        self._reasons.update(dict(picks))
         return self._ask_which(
-            "Based on your playlist, you might like these:", [tracks[i] for i, _ in picks], cancel_text="Okay, I won't add any of them. Say <i>recommend more</i> for other songs", notes=[why for _, why in picks]
+            "Based on your playlist, you might like these:", self._last_recs, cancel_text="Okay, I won't add any of them. Say <i>recommend more</i> for other songs", notes=[why for _, why in picks]
         )
+
+    # --------------------------------------------------
+    # Part 4: feedback-aware recommendations
+    # --------------------------------------------------
+
+    def _set_variety(self, variety: str) -> None:
+        """'more varied' lowers the MMR lambda (more diversity); 'more of the same' raises it to 1."""
+        self._variety = MORE_VARIETY if variety.lower() == "more" else 1.0 if variety.lower() == "less" else self._variety
+
+    def _refined_recommendation(self, intro: str, seen: bool = False, previous: list[str] | None = None) -> str:
+        """Rocchio + reranker + MMR over the catalog, driven by the profile (see refine.py).
+
+        seen: leave out songs that were suggested before (for "recommend more"); after feedback the new
+        list may keep earlier songs, so the before/after difference is meaningful.
+        """
+        index = get_term_index(self._db)
+        played = [index.index[t] for t in self._playlist if t in index.index]
+        exclude = [index.index[t] for t in self._recommended if t in index.index] if seen else []
+        wide = self._variety < DEFAULT_VARIETY            # asked for variety: give MMR more candidates to choose from
+        cfg = replace(RefineConfig(), mmr_lambda=self._variety, mmr_pool=200 if wide else 50)
+        items = refine(index, "", played, self._profile, cfg, k=5, exclude=exclude,
+                       neural=get_neural(index), encode=encode_text)
+        if not items:
+            return "I couldn't find more songs that fit."
+        by_id = {t["track_id"]: t for t in self._db.get_tracks([index.ids[i.idx] for i in items])}
+        tracks = [by_id[index.ids[i.idx]] for i in items if index.ids[i.idx] in by_id]
+        notes = [explain(index, i) for i in items if index.ids[i.idx] in by_id]
+        self._recommended.extend(t["track_id"] for t in tracks if t["track_id"] not in self._recommended)
+        before = previous if previous is not None else [t["track_id"] for t in self._last_recs]
+        self._last_recs = tracks
+        self._reasons.update({t["track_id"]: n for t, n in zip(tracks, notes)})
+
+        change = ""
+        if before:
+            now = [t["track_id"] for t in tracks]
+            added = [self._plain_label(t) for t in tracks if t["track_id"] not in before]
+            dropped = [self._plain_label(t) for t in self._db.get_tracks([b for b in before if b not in now])]
+            kept = len(now) - len(added)
+            change = (
+                f"<br>Compared with the last list: {kept} kept, {len(added)} new"
+                + (f" ({html.escape(', '.join(added))})" if added else "")
+                + (f", {len(dropped)} dropped ({html.escape(', '.join(dropped))})" if dropped else "")
+                + "."
+            )
+        return self._ask_which(
+            intro + change + "<br>Here is the new list:", tracks,
+            cancel_text="Okay, I won't add any of them. Say <i>recommend more</i> for other songs",
+            notes=notes,
+        )
+
+    def _on_feedback(self, action: dict) -> str | None:
+        """Update the preference profile from a feedback action and answer with a refined list."""
+        previous = [t["track_id"] for t in self._last_recs]
+        said: list[str] = []                       # facts for the reply, in plain words
+
+        def names(key: str) -> list[str]:
+            raw = action.get(key)
+            return [str(v).strip() for v in raw if str(v).strip()] if isinstance(raw, list) else []
+
+        def songs(key: str) -> list[dict]:
+            picked = []
+            for v in names(key):
+                try:
+                    n = int(v)
+                except ValueError:
+                    continue
+                if 1 <= n <= len(self._last_recs):
+                    picked.append(self._last_recs[n - 1])
+            return picked
+
+        for track in songs("liked_positions"):
+            self._profile.like_track(track["track_id"])
+            said.append("you like " + self._plain_label(track))
+        for track in songs("disliked_positions"):
+            self._profile.dislike_track(track["track_id"])
+            said.append("you don't want " + self._plain_label(track))
+
+        for key, like in (("liked_artists", True), ("disliked_artists", False)):
+            for name in names(key):
+                found = self._db.find_artists(name, limit=1)
+                if found and found[0]["similarity"] >= 0.85:
+                    (self._profile.like_artist if like else self._profile.dislike_artist)(found[0]["key"])
+                    said.append(("you like " if like else "you don't want ") + found[0]["name"])
+
+        for key, like in (("liked_tags", True), ("disliked_tags", False)):
+            for text in names(key):
+                tag = match_tag(text)
+                if tag:
+                    (self._profile.like_tag if like else self._profile.dislike_tag)(tag)
+                    said.append(("more " if like else "less ") + tag)
+                elif like:
+                    self._profile.add_wish(text)   # a style the catalog has no tag for: use the words
+                    said.append("more " + text)
+
+        wish = action.get("wish")
+        if isinstance(wish, str) and wish.strip():
+            self._profile.add_wish(wish)
+            said.append("more " + wish.strip())
+        variety = str(action.get("variety") or "")
+        if variety.lower() in ("more", "less"):
+            self._set_variety(variety)
+            said.append("a more varied list" if variety.lower() == "more" else "more of the same")
+
+        if not said:
+            return None                            # nothing we could use: let the rules answer
+        sentence = self._phrase(said) or "Got it: " + ", ".join(said) + "."
+        return self._refined_recommendation(html.escape(sentence), previous=previous)
+
+    def _phrase(self, facts: list[str]) -> str | None:
+        """One friendly sentence about how the feedback was understood. The LLM only words the
+        facts we give it; it cannot add anything (and the plain text is used if it is slow)."""
+        if self._llm is None or not hasattr(self._llm, "with_options"):
+            return None
+        try:
+            reply = self._llm.with_options(timeout=3.0, max_retries=0).chat.completions.create(
+                model=LLM_MODEL, temperature=0.3, max_tokens=80,
+                messages=[{"role": "user", "content": (
+                    "You are MusicCRS, a music chat assistant. In ONE short, friendly sentence, tell the user "
+                    "how you understood their feedback. Use only these facts and add nothing else: "
+                    + "; ".join(facts))}],
+            )
+            sentence = (reply.choices[0].message.content or "").strip()
+            return sentence if sentence else None
+        except Exception:
+            return None
+
     # --------------------------------------------------
 
     def receive_utterance(self, utterance: Utterance) -> None:
@@ -715,6 +979,7 @@ class MusicCRS(Agent):
                 return
 
         dialogue_acts.append(self._playlist_act())
+        dialogue_acts.append(self._profile_act())
         if self._offer:
             dialogue_acts.append(self._options_act(self._offer))
         self._dialogue_connector.register_agent_utterance(
@@ -742,6 +1007,7 @@ class MusicCRS(Agent):
             is_command = bool(
                 m_add or m_remove or _VIEW_RE.match(command) or _CLEAR_RE.match(command) or lowered.startswith("/") or is_help_request(command)
                 or question is not None or _RECOMMEND_RE.match(command) or _GENERATE_RE.match(command)
+                or _PREFS_RE.match(command) or _FORGET_RE.match(command) or _WHY_RE.match(command)
             )
             choice = self._handle_choice(command, self._pending, is_command)
         if confirmation is not None:
@@ -770,6 +1036,15 @@ class MusicCRS(Agent):
         # Remove a track.
         elif m_remove:
             response = self._remove_track(m_remove.group("q"))
+
+        elif _FORGET_RE.match(command):
+            response = self._forget_preferences()
+
+        elif _PREFS_RE.match(command):
+            response = self._show_preferences()
+
+        elif _WHY_RE.match(command):
+            response = self._why(_WHY_RE.match(command).group("q"))
 
         elif is_help_request(command):
             response = help_answer(command)
@@ -836,6 +1111,9 @@ class MusicCRS(Agent):
     def _clear_playlist(self) -> str:
         self._playlist.clear()
         self._recommended.clear()
+        self._profile.clear()
+        self._last_recs = []
+        self._reasons.clear()
         return "Your playlist has been cleared."
 
     def _router_state(self) -> dict:
@@ -844,6 +1122,7 @@ class MusicCRS(Agent):
             "playlist": [self._plain_label(t) for t in self._playlist_tracks()][-30:],
             "last": self._plain_label(self._last_track) if self._last_track else None,
             "open_list": [self._plain_label(t) for t in self._pending or []],
+            "last_recommendations": [self._plain_label(t) for t in self._last_recs],
             "pending_confirm": (
                 f"Replace the current playlist with a new one for '{self._confirm_generate}'?"
                 if self._confirm_generate else None
@@ -861,7 +1140,7 @@ class MusicCRS(Agent):
             return None
 
         pending = self._pending
-        if action["action"] != "select":
+        if action["action"] not in ("select", "why", "preferences"):
             self._pending = None                  # any other request closes an open list
         reply = self._do_action(action, command)
         if reply is None:
@@ -894,6 +1173,12 @@ class MusicCRS(Agent):
             return self._clear_playlist()
         if kind == "help":
             return help_answer(text("topic") or command)
+        if kind == "preferences":
+            return self._show_preferences()
+        if kind == "forget":
+            return self._forget_preferences()
+        if kind == "why":
+            return self._why(" ".join(x for x in (text("title"), text("artist")) if x))
         if kind == "add":
             if not text("title"):
                 return None
@@ -913,12 +1198,11 @@ class MusicCRS(Agent):
             subject = "it" if subject_type == "last" else text("subject")
             return self._answer_question(Question(internal, subject)) if subject else None
         if kind == "recommend":
-            return self._recommend()
+            return self._recommend(text("hint"), text("variety"))
         if kind == "generate":
             return self._generate_playlist(text("description")) if text("description") else None
         if kind == "feedback":
-            self._feedback.append(action)         # Part 4 turns this into a preference profile
-            return self._recommend()
+            return self._on_feedback(action)
         if kind == "chat":
             return html.escape(text("reply")) or None
         return None
@@ -996,6 +1280,8 @@ class MusicCRS(Agent):
 if __name__ == "__main__":
     get_fuzzy_index(TrackDatabase())
     get_recommender(TrackDatabase())
+    get_neural(get_term_index(TrackDatabase()))
     warm_up_generator()
     platform = FlaskSocketPlatform(MusicCRS)
+    register_search(platform.app, TrackDatabase(), get_fuzzy_index(TrackDatabase()))     # the UI's search boxes
     platform.start()

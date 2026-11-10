@@ -18,17 +18,9 @@ import {
   MDBCardFooter,
 } from "mdb-react-ui-kit";
 import { AgentChatMessage, UserChatMessage } from "../ChatMessage";
-import { ChatMessage } from "../../types";
+import { ChatMessage, PlaylistTrack, TasteChip } from "../../types";
+import SidePanel from "../SidePanel/SidePanel";
 import { ConfigContext } from "../../contexts/ConfigContext";
-
-
-interface PlaylistTrack {
-  track_id: string;
-  track_name: string;
-  artist_name: string[];
-  album_name: string[];
-  popularity: number;
-}
 
 
 export default function ChatBox() {
@@ -46,7 +38,7 @@ export default function ChatBox() {
   const [chatButtons, setChatButtons] = useState<JSX.Element[]>([]);
   const [inputValue, setInputValue] = useState<string>("");
   const [playlist, setPlaylist] = useState<PlaylistTrack[]>([]);
-  const [newTrack, setNewTrack] = useState("");
+  const [taste, setTaste] = useState<TasteChip[]>([]);
   const chatMessagesRef = useRef(chatMessages);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -97,6 +89,10 @@ export default function ChatBox() {
         } catch (error) {
           console.error("Invalid playlist state:", error);
         }
+      }
+      const tasteAct = message.dialogue_acts?.find((act) => act.intent === "PROFILE_STATE");
+      if (tasteAct) {
+        setTaste(tasteAct.annotations.map((a) => ({ slot: a.slot, value: a.value })));
       }
       if (!!message.text) {
         const image_url = message.attachments?.find((attachment) => attachment.type === "image")?.payload.images?.[0];
@@ -177,95 +173,60 @@ export default function ChatBox() {
       setChatMessages([]);
       setChatButtons([]);
       setPlaylist([]);
+      setTaste([]);
     });
   }, [onRestart]);
 
   return (
-    <div className="chat-widget-content">
-      <MDBCard
-        id="chatBox"
-        className="chat-widget-card"
-        style={{ borderRadius: "15px" }}
-      >
-        <MDBCardHeader
-          className="d-flex justify-content-between align-items-center p-3 bg-info text-white border-bottom-0"
-          style={{
-            borderTopLeftRadius: "15px",
-            borderTopRightRadius: "15px",
-          }}
+    <div className={`musiccrs-layout${config.useWidget ? " compact" : ""}`}>
+      <div className="chat-widget-content chat-column">
+        <MDBCard
+          id="chatBox"
+          className="chat-widget-card"
+          style={{ borderRadius: "15px" }}
         >
-          <p className="mb-0 fw-bold">{config.name}</p>
-          <p className="mb-0 fw-bold">{user?.username}</p>
-        </MDBCardHeader>
+          <MDBCardHeader
+            className="d-flex justify-content-between align-items-center p-3 bg-info text-white border-bottom-0"
+            style={{
+              borderTopLeftRadius: "15px",
+              borderTopRightRadius: "15px",
+            }}
+          >
+            <p className="mb-0 fw-bold">{config.name}</p>
+            <p className="mb-0 fw-bold">{user?.username}</p>
+          </MDBCardHeader>
 
-        <MDBCardBody>
-          <div className="card-body-messages">
-            {chatMessages}
-            <div className="d-flex flex-wrap justify-content-between">
-              {chatButtons}
+          <MDBCardBody>
+            <div className="card-body-messages">
+              {chatMessages}
+              <div className="d-flex flex-wrap justify-content-between">
+                {chatButtons}
+              </div>
             </div>
-          </div>
-        </MDBCardBody>
-        <section className="playlist-panel" aria-label="Current playlist">
-          <div className="playlist-header">
-            <strong>My Playlist ({playlist.length})</strong>
-            <button type="button" className="btn btn-sm btn-outline-danger" disabled={!playlist.length}
-              onClick={() => sendMessage({ message: "/clear" })}>Clear</button>
-          </div>
-          <div className="playlist-items">
-            {playlist.length === 0 ? (
-              <p className="text-muted mb-1">No tracks yet.</p>
-            ) : (
-              playlist.map((track, index) => (
-                <div className="playlist-item" key={track.track_id}>
-                  <span>
-                    {index + 1}. {track.track_name}
-                    <small className="text-muted">
-                      {" — "}{track.artist_name.join(", ")}
-                    </small>
-                  </span>
-
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-outline-secondary"
-                    onClick={() =>
-                      sendMessage({ message: `/remove ${track.track_id}` })
-                    }
-                    aria-label={`Remove ${track.track_name}`}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))
-        )}
-
-          </div>
-          <form className="playlist-add" onSubmit={(e) => {
-            e.preventDefault();
-            if (newTrack.trim()) sendMessage({ message: `/add ${newTrack.trim()}` });
-            setNewTrack("");
-          }}>
-            <input className="form-control form-control-sm" value={newTrack}
-              onChange={(e) => setNewTrack(e.target.value)} placeholder="Song title or title by artist" />
-            <button className="btn btn-sm btn-primary" type="submit">Add</button>
-          </form>
-        </section>
-        <MDBCardFooter className="text-muted d-flex justify-content-start align-items-center p-2">
-          <form className="d-flex flex-grow-1" onSubmit={handleInput}>
-            <input
-              type="text"
-              className="form-control form-control-lg"
-              id="ChatInput"
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Type message"
-              ref={inputRef}
-            ></input>
-            <button type="submit" className="btn btn-link text-muted">
-              <MDBIcon fas size="2x" icon="paper-plane" />
-            </button>
-          </form>
-        </MDBCardFooter>
-      </MDBCard>
+          </MDBCardBody>
+          <MDBCardFooter className="text-muted d-flex justify-content-start align-items-center p-2">
+            <form className="d-flex flex-grow-1" onSubmit={handleInput}>
+              <input
+                type="text"
+                className="form-control form-control-lg"
+                id="ChatInput"
+                onChange={(e) => setInputValue(e.target.value)}
+                placeholder="Type message"
+                ref={inputRef}
+              ></input>
+              <button type="submit" className="btn btn-link text-muted">
+                <MDBIcon fas size="2x" icon="paper-plane" />
+              </button>
+            </form>
+          </MDBCardFooter>
+        </MDBCard>
+      </div>
+      <SidePanel
+        playlist={playlist}
+        taste={taste}
+        send={(message) => sendMessage({ message })}
+        serverUrl={config.serverUrl ?? "http://127.0.0.1:5000"}
+      />
     </div>
   );
 }
